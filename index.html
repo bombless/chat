@@ -334,6 +334,36 @@
             background: #8a3a4a;
         }
 
+        /* 正在修改中的视觉提示 */
+        .msg.modifying {
+            box-shadow: 0 0 0 2px #e9456066;
+            border-left-color: #e94560 !important;
+        }
+
+        .msg .edit-status {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-top: 8px;
+            font-size: 12px;
+            color: #e9a3b0;
+        }
+
+        .msg .edit-status .dot {
+            display: inline-block;
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: #e94560;
+            animation: blink 0.8s infinite;
+        }
+
+        .msg-edit textarea:disabled,
+        .msg-edit button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
         .msg .streaming {
             display: inline-block;
             width: 6px;
@@ -1144,6 +1174,20 @@
             setStatus('修改中...', 'active');
             abortController = new AbortController();
 
+            // 视觉提示：禁用输入框/按钮 + 显示「修改中」指示
+            msgEl.classList.add('modifying');
+            const editBox = msgEl._editBox;
+            if (editBox) {
+                editBox.querySelectorAll('textarea, button').forEach((el) => (el.disabled = true));
+            }
+            let statusEl = msgEl.querySelector('.edit-status');
+            if (!statusEl) {
+                statusEl = document.createElement('div');
+                statusEl.className = 'edit-status';
+                statusEl.innerHTML = '<span class="dot"></span><span class="txt">模型正在按意见修改…</span>';
+                msgEl.appendChild(statusEl);
+            }
+
             const idx = chat.messages.indexOf(msgObj);
             const prefix = chat.messages.slice(0, idx);
             const reviseMessages = [
@@ -1201,8 +1245,16 @@
 
                 // 实时把修订结果写回该消息对象（确定时即生效）
                 msgObj.content = newContent;
+                msgEl.classList.remove('modifying');
+                if (statusEl) statusEl.remove();
                 finishEditUI(msgEl);
             } catch (err) {
+                msgEl.classList.remove('modifying');
+                if (statusEl) statusEl.remove();
+                // 出错时恢复编辑框可操作性，允许重试
+                if (editBox) {
+                    editBox.querySelectorAll('textarea, button').forEach((el) => (el.disabled = false));
+                }
                 addMessage('error', '❌ 修改失败: ' + (err.message || err));
             } finally {
                 isProcessing = false;
