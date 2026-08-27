@@ -1278,7 +1278,14 @@
         }
 
         // 确定时让用户选择：保留 / 移除该回复之后的内容
+        // 若该回复之后已无后续会话，则无需区分，直接确定即可
         function showConfirmChoice(msgEl) {
+            const msgObj = msgEl._msgObj;
+            const idx = chat.messages.indexOf(msgObj);
+            if (idx < 0 || idx === chat.messages.length - 1) {
+                confirmEdit(msgEl, false);
+                return;
+            }
             const actions = msgEl.querySelector('.msg-actions');
             actions.innerHTML = '';
             actions.appendChild(mkBtn('保留后续对话', () => confirmEdit(msgEl, false)));
@@ -1323,8 +1330,10 @@
                     node = next;
                 }
                 addMessage('system', '✅ 已更新对话历史（该回复之后的旧内容已移除，可继续对话）');
-            } else {
+            } else if (idx >= 0 && idx < chat.messages.length - 1) {
                 addMessage('system', '✅ 已更新该条回复，后续对话已保留（其内容仍基于旧回复，仅供参考）');
+            } else {
+                addMessage('system', '✅ 已更新对话历史');
             }
         }
 
