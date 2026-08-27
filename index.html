@@ -406,6 +406,141 @@
             color: #8a9aaa;
         }
 
+        /* ========== 知识库面板 ========== */
+        .kb-panel {
+            display: none;
+            flex-direction: column;
+            background: #0f3460;
+            border-bottom: 1px solid #1a4a7a;
+            padding: 12px 20px;
+            gap: 10px;
+            max-height: 320px;
+            overflow-y: auto;
+        }
+
+        .kb-panel.open {
+            display: flex;
+        }
+
+        .kb-panel h4 {
+            font-size: 13px;
+            color: #8a9aaa;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .kb-input-row {
+            display: flex;
+            gap: 8px;
+        }
+
+        .kb-input-row input {
+            flex: 1;
+            background: #1a1a2e;
+            border: 1px solid #2a3a5a;
+            color: #e0e0e0;
+            padding: 8px 12px;
+            border-radius: 10px;
+            font-size: 13px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+
+        .kb-input-row input:focus {
+            border-color: #4a8aaa;
+        }
+
+        .kb-fetch-btn {
+            background: #1a4a7a;
+            border: none;
+            color: #e0e0e0;
+            padding: 8px 18px;
+            border-radius: 10px;
+            font-size: 13px;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.2s;
+        }
+
+        .kb-fetch-btn:hover:not(:disabled) {
+            background: #2a5a8a;
+        }
+
+        .kb-fetch-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .kb-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .kb-item {
+            background: #16213e;
+            border: 1px solid #2a3a5a;
+            border-radius: 10px;
+            padding: 10px 12px;
+            font-size: 13px;
+        }
+
+        .kb-item .kb-item-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 8px;
+        }
+
+        .kb-item .kb-title {
+            color: #cfe0f5;
+            font-weight: 600;
+            word-break: break-word;
+        }
+
+        .kb-item .kb-url {
+            color: #6a8aaa;
+            font-size: 11px;
+            margin-top: 2px;
+            word-break: break-all;
+        }
+
+        .kb-item .kb-summary {
+            color: #b0c0d0;
+            margin-top: 6px;
+            line-height: 1.5;
+            white-space: pre-wrap;
+        }
+
+        .kb-item .kb-del {
+            background: #6b2a3a;
+            border: none;
+            color: #e0e0e0;
+            padding: 3px 9px;
+            border-radius: 8px;
+            font-size: 11px;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+
+        .kb-item .kb-del:hover {
+            background: #8a3a4a;
+        }
+
+        .kb-status {
+            font-size: 12px;
+            color: #6a8aaa;
+        }
+
+        .kb-empty {
+            font-size: 12px;
+            color: #5a6a7a;
+            text-align: center;
+            padding: 8px;
+        }
+
         /* ========== 空状态 ========== */
         .empty-state {
             flex: 1;
@@ -515,11 +650,22 @@
                 </span>
             </div>
             <div class="header-actions">
+                <button class="btn btn-warning" id="btnKb" title="打开知识库面板">📚 <span>知识库</span></button>
                 <button class="btn btn-warning" id="btnModels" title="刷新模型列表">📋 <span>模型</span></button>
                 <button class="btn btn-danger" id="btnReset">🔄 <span>重置</span></button>
                 <button class="btn btn-success" id="btnClear">🗑️ <span>清屏</span></button>
             </div>
         </header>
+
+        <!-- ====== 知识库面板 ====== -->
+        <div class="kb-panel" id="kbPanel">
+            <h4>📚 网页知识库 <span class="kb-status" id="kbStatus"></span></h4>
+            <div class="kb-input-row">
+                <input type="text" id="kbUrlInput" placeholder="输入任意网址，例如 https://example.com，回车抓取" />
+                <button class="kb-fetch-btn" id="kbFetchBtn">抓取</button>
+            </div>
+            <div class="kb-list" id="kbList"></div>
+        </div>
 
         <!-- ====== 消息区域 ====== -->
         <div class="messages" id="messages">
@@ -551,8 +697,40 @@
         const MODELS_URL = '/api/models'
         const CONFIG = {
             maxHistory: 50,
-            systemPrompt: 'You are a helpful assistant.',
+            systemPrompt: 'You are a helpful assistant. 当用户的问题涉及已抓取保存的网页内容时，请使用 search_knowledge 工具在知识库中检索。如果需要了解一个尚未保存的网页，请使用 fetch_webpage 工具抓取它。回答时请基于知识库返回的真实内容，并注明信息来源网址。',
         };
+
+        // 供模型调用的工具定义
+        const CHAT_TOOLS = [
+            {
+                type: 'function',
+                function: {
+                    name: 'search_knowledge',
+                    description: '在用户已抓取保存的网页知识库中检索相关信息。当用户的问题涉及某个已保存网页、文章，或需要引用之前抓取的网页内容时调用。',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            query: { type: 'string', description: '检索关键词或问题' }
+                        },
+                        required: ['query']
+                    }
+                }
+            },
+            {
+                type: 'function',
+                function: {
+                    name: 'fetch_webpage',
+                    description: '抓取并总结任意网址的网页内容，同时保存到知识库。当用户需要了解某个尚未保存的网页、文章时使用。',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            url: { type: 'string', description: '要抓取的完整网址，例如 https://example.com' }
+                        },
+                        required: ['url']
+                    }
+                }
+            }
+        ];
 
         // ============================================================
         //  核心 Chat 类（从 chat.js 移植，适配浏览器）
@@ -592,6 +770,8 @@
                 const turnMsgs = this.messages.filter(m => m.role !== 'system');
                 const trimmed = turnMsgs.slice(-this.maxHistory * 2);
                 const reqMessages = [...systemMsgs, ...trimmed];
+
+                reqMessages.forEach(console.log)
 
                 const resp = await fetch(this.url, {
                     method: 'POST',
@@ -738,6 +918,12 @@
             btnModels: document.getElementById('btnModels'),
             btnReset: document.getElementById('btnReset'),
             btnClear: document.getElementById('btnClear'),
+            btnKb: document.getElementById('btnKb'),
+            kbPanel: document.getElementById('kbPanel'),
+            kbUrlInput: document.getElementById('kbUrlInput'),
+            kbFetchBtn: document.getElementById('kbFetchBtn'),
+            kbList: document.getElementById('kbList'),
+            kbStatus: document.getElementById('kbStatus'),
         };
 
         let chat = null;
@@ -868,10 +1054,49 @@
                 model: currentModel,
                 maxHistory: CONFIG.maxHistory,
                 system: CONFIG.systemPrompt,
+                tools: CHAT_TOOLS,
             });
             // 同步下拉框
             dom.modelSelect.value = model;
             setStatus(`模型: ${model}`, 'idle');
+        }
+
+        // ========== 工具执行 ==========
+        async function executeTool(call) {
+            try {
+                if (call.name === 'search_knowledge') {
+                    const q = call.arguments?.query || '';
+                    const resp = await fetch('/api/kb-search', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ query: q }),
+                    });
+                    const data = await resp.json();
+                    if (data.results && data.results.length) {
+                        return JSON.stringify(data.results, null, 2);
+                    }
+                    return '知识库中未找到与「' + q + '」相关的内容。';
+                } else if (call.name === 'fetch_webpage') {
+                    const url = call.arguments?.url || '';
+                    const resp = await fetch('/api/fetch-url', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ url }),
+                    });
+                    const data = await resp.json();
+                    if (!resp.ok) {
+                        return '抓取网页失败: ' + (data.error || resp.status);
+                    }
+                    // 同步刷新知识库列表
+                    loadKB();
+                    return '已抓取并保存到知识库。\n标题: ' + data.title +
+                        '\n网址: ' + data.url +
+                        '\n内容长度: ' + data.length + ' 字符\n\n摘要:\n' + data.summary;
+                }
+                return '未知工具: ' + call.name;
+            } catch (e) {
+                return '工具执行出错: ' + e.message;
+            }
         }
 
         // ========== 发送消息 ==========
@@ -887,6 +1112,7 @@
                     model: currentModel,
                     maxHistory: CONFIG.maxHistory,
                     system: CONFIG.systemPrompt,
+                    tools: CHAT_TOOLS,
                 });
             }
 
@@ -906,25 +1132,61 @@
             abortController = new AbortController();
             let fullContent = '';
             let hasContent = false;
+            let toolRound = 0;
 
             try {
-                for await (const chunk of chat.ask(text, abortController.signal)) {
-                    const type = chunk[0];
-                    const content = chunk.slice(1);
+                // 把用户消息加入对话并发起第一轮请求
+                chat.messages.push({ role: 'user', content: text });
 
-                    if (type === 't') {
-                        hasContent = true;
-                        fullContent += content;
-                        updateStreamingMessage(fullContent);
-                    } else if (type === 'o') {
-                        // tool call
-                        try {
-                            const call = JSON.parse(content);
-                            addMessage('system', `🔧 调用工具: ${call.name}`, { toolCall: JSON.stringify(call.arguments, null, 2) });
-                        } catch {
-                            addMessage('system', `🔧 ${content}`);
+                while (true) {
+                    let toolCalls = [];
+
+                    for await (const chunk of chat.request(abortController.signal)) {
+                        const type = chunk[0];
+                        const content = chunk.slice(1);
+
+                        if (type === 't') {
+                            hasContent = true;
+                            fullContent += content;
+                            updateStreamingMessage(fullContent);
+                        } else if (type === 'o') {
+                            // tool call
+                            try {
+                                const call = JSON.parse(content);
+                                toolCalls.push(call);
+                                addMessage('system', `🔧 调用工具: ${call.name}`, { toolCall: JSON.stringify(call.arguments, null, 2) });
+                            } catch {
+                                addMessage('system', `🔧 ${content}`);
+                            }
                         }
                     }
+
+                    // 没有工具调用 -> 本轮回复结束
+                    if (toolCalls.length === 0) break;
+
+                    // 执行工具并回填结果
+                    toolRound++;
+                    setStatus(`执行工具 (第 ${toolRound} 轮)...`, 'active');
+                    const reports = [];
+                    for (const call of toolCalls) {
+                        const result = await executeTool(call);
+                        addMessage('system', `📨 工具结果: ${call.name}`, { toolCall: result.slice(0, 2000) });
+                        reports.push({ id: call.id, content: result });
+                    }
+
+                    // 将工具结果写入对话历史，准备下一轮请求
+                    reports.forEach((r) => {
+                        chat.messages.push({
+                            role: 'tool',
+                            tool_call_id: r.id,
+                            content: r.content,
+                        });
+                    });
+
+                    // 重置流式输出，准备下一轮
+                    finishStreaming();
+                    fullContent = '';
+                    hasContent = false;
                 }
 
                 if (!hasContent) {
@@ -1009,6 +1271,119 @@
             }
         });
 
+        // ========== 知识库面板 ==========
+        function toggleKbPanel() {
+            dom.kbPanel.classList.toggle('open');
+            if (dom.kbPanel.classList.contains('open')) {
+                loadKB();
+                dom.kbUrlInput.focus();
+            }
+        }
+
+        async function loadKB() {
+            try {
+                const resp = await fetch('/api/kb');
+                const data = await resp.json();
+                dom.kbStatus.textContent = `(${data.count} 条)`;
+                renderKBList(data.items || []);
+            } catch (e) {
+                dom.kbStatus.textContent = '(加载失败)';
+            }
+        }
+
+        function renderKBList(items) {
+            dom.kbList.innerHTML = '';
+            if (items.length === 0) {
+                dom.kbList.innerHTML = '<div class="kb-empty">暂无抓取内容，输入网址后点击「抓取」</div>';
+                return;
+            }
+            items.slice().reverse().forEach((item) => {
+                const div = document.createElement('div');
+                div.className = 'kb-item';
+
+                const head = document.createElement('div');
+                head.className = 'kb-item-head';
+
+                const titleWrap = document.createElement('div');
+                titleWrap.style.flex = '1';
+                const title = document.createElement('div');
+                title.className = 'kb-title';
+                title.textContent = item.title || item.url;
+                const url = document.createElement('div');
+                url.className = 'kb-url';
+                url.textContent = item.url;
+                titleWrap.appendChild(title);
+                titleWrap.appendChild(url);
+
+                const del = document.createElement('button');
+                del.className = 'kb-del';
+                del.textContent = '删除';
+                del.addEventListener('click', () => deleteKB(item.id));
+
+                head.appendChild(titleWrap);
+                head.appendChild(del);
+
+                const summary = document.createElement('div');
+                summary.className = 'kb-summary';
+                summary.textContent = item.summary || '';
+
+                div.appendChild(head);
+                div.appendChild(summary);
+                dom.kbList.appendChild(div);
+            });
+        }
+
+        async function deleteKB(id) {
+            try {
+                await fetch('/api/kb/' + encodeURIComponent(id), { method: 'DELETE' });
+                loadKB();
+            } catch (e) {
+                console.error('删除失败', e);
+            }
+        }
+
+        async function fetchUrl() {
+            const url = dom.kbUrlInput.value.trim();
+            if (!url || isProcessing) return;
+
+            dom.kbFetchBtn.disabled = true;
+            dom.kbFetchBtn.textContent = '抓取中...';
+            dom.kbStatus.textContent = '(抓取中...)';
+
+            try {
+                const resp = await fetch('/api/fetch-url', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url }),
+                });
+                const data = await resp.json();
+
+                if (!resp.ok) {
+                    addMessage('error', `❌ 抓取失败: ${data.error || resp.status}`);
+                } else {
+                    addMessage('system', `📚 已抓取: ${data.title}\n${data.url}\n\n摘要:\n${data.summary}`);
+                    dom.kbUrlInput.value = '';
+                    dom.kbStatus.textContent = `(${(await (await fetch('/api/kb')).json()).count} 条)`;
+                }
+                loadKB();
+            } catch (e) {
+                addMessage('error', `❌ 抓取出错: ${e.message}`);
+            } finally {
+                dom.kbFetchBtn.disabled = false;
+                dom.kbFetchBtn.textContent = '抓取';
+            }
+        }
+
+        // 知识库按钮
+        dom.btnKb.addEventListener('click', toggleKbPanel);
+        dom.kbFetchBtn.addEventListener('click', fetchUrl);
+        dom.kbUrlInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                fetchUrl();
+            }
+        });
+
         // ========== 初始化 ==========
         async function init() {
             // 检查配置
@@ -1025,11 +1400,15 @@
                 model: currentModel,
                 maxHistory: CONFIG.maxHistory,
                 system: CONFIG.systemPrompt,
+                tools: CHAT_TOOLS,
             });
 
             // 加载模型列表
             await loadModels();
             dom.modelSelect.value = currentModel;
+
+            // 预加载知识库计数
+            loadKB().catch(() => {});
 
             // 显示欢迎
             addMessage('system', `🤖 欢迎！当前模型: ${currentModel}`);
