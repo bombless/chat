@@ -268,6 +268,72 @@
             overflow-x: auto;
         }
 
+        /* ========== 修改 / 修订 ========== */
+        .msg-actions {
+            display: flex;
+            gap: 6px;
+            margin-top: 8px;
+            flex-wrap: wrap;
+        }
+
+        .btn-small {
+            background: #2a3a5a;
+            border: none;
+            color: #cfe0f5;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+
+        .btn-small:hover {
+            background: #3a4a6a;
+        }
+
+        .msg-edit {
+            margin-top: 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .msg-edit .edit-input {
+            background: #1a1a2e;
+            border: 1px solid #3a5a7a;
+            color: #e0e0e0;
+            border-radius: 8px;
+            padding: 8px 10px;
+            font-size: 13px;
+            font-family: inherit;
+            resize: vertical;
+            min-height: 48px;
+            outline: none;
+        }
+
+        .msg-edit .edit-input:focus {
+            border-color: #4a8aaa;
+        }
+
+        .msg-edit .edit-btns {
+            display: flex;
+            gap: 6px;
+        }
+
+        .msg-edit .btn-submit {
+            background: #1a4a7a;
+        }
+        .msg-edit .btn-submit:hover {
+            background: #2a5a8a;
+        }
+        .msg-edit .btn-cancel {
+            background: #6b2a3a;
+        }
+        .msg-edit .btn-cancel:hover {
+            background: #8a3a4a;
+        }
+
         .msg .streaming {
             display: inline-block;
             width: 6px;
@@ -1008,6 +1074,197 @@
             streamingMessage = null;
         }
 
+        // ========== 修改 / 修订 ==========
+        function mkBtn(label, onClick, extraClass = '') {
+            const b = document.createElement('button');
+            b.className = 'btn btn-small ' + extraClass;
+            b.textContent = label;
+            b.addEventListener('click', onClick);
+            return b;
+        }
+
+        // 仅更新消息正文文本（保留时间、操作按钮等子元素）
+        function updateMessageText(msgEl, text) {
+            let div = msgEl.querySelector('div:first-child');
+            if (!div) {
+                div = document.createElement('div');
+                msgEl.insertBefore(div, msgEl.firstChild);
+            }
+            div.textContent = text;
+            dom.messages.scrollTop = dom.messages.scrollHeight;
+        }
+
+        // 给一条 assistant 消息附加「修改」按钮
+        function attachModify(msgEl, msgObj) {
+            if (msgEl._modifyAttached) return;
+            msgEl._modifyAttached = true;
+            msgEl._msgObj = msgObj;
+
+            const actions = document.createElement('div');
+            actions.className = 'msg-actions';
+            actions.appendChild(mkBtn('✏️ 修改', () => startEdit(msgEl, msgObj, actions)));
+            msgEl.appendChild(actions);
+        }
+
+        // 进入编辑态：展示意见输入框
+        function startEdit(msgEl, msgObj, actions) {
+            if (isProcessing) return;
+            if (msgEl._origContent === undefined) msgEl._origContent = msgObj.content;
+
+            actions.style.display = 'none';
+            if (msgEl._editBox) msgEl._editBox.remove();
+
+            const editBox = document.createElement('div');
+            editBox.className = 'msg-edit';
+            editBox.innerHTML = `
+                <textarea class="edit-input" placeholder="输入修改意见，例如：把语气改得更正式一些 / 再补充两点 / 精简到三句话"></textarea>
+                <div class="edit-btns">
+                    <button class="btn btn-small btn-submit">提交修改</button>
+                    <button class="btn btn-small btn-cancel">取消</button>
+                </div>`;
+            msgEl.appendChild(editBox);
+            msgEl._editBox = editBox;
+
+            const ta = editBox.querySelector('.edit-input');
+            ta.focus();
+            editBox.querySelector('.btn-submit').addEventListener('click', () => {
+                const instr = ta.value.trim();
+                if (!instr) return;
+                doRevision(msgEl, msgObj, instr, actions);
+            });
+            editBox.querySelector('.btn-cancel').addEventListener('click', () => {
+                cancelEdit(msgEl, msgObj, actions);
+            });
+        }
+
+        // 调用修订接口，按意见重新生成该条回复
+        async function doRevision(msgEl, msgObj, instruction) {
+            if (isProcessing) return;
+            isProcessing = true;
+            setStatus('修改中...', 'active');
+            abortController = new AbortController();
+
+            const idx = chat.messages.indexOf(msgObj);
+            const prefix = chat.messages.slice(0, idx);
+            const reviseMessages = [
+                ...prefix,
+                { role: 'assistant', content: msgObj.content },
+                {
+                    role: 'user',
+                    content:
+                        '请根据以下修改意见，重新撰写你上一条（assistant 角色）的回复。' +
+                        '只输出修改后的回复正文，不要重复用户的问题，也不要添加额外解释。\n\n' +
+                        '修改意见：' + instruction,
+                },
+            ];
+
+            let newContent = '';
+            try {
+                const resp = await fetch('/api/revise', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        messages: reviseMessages,
+                        model: currentModel,
+                        tools: CHAT_TOOLS,
+                    }),
+                });
+                if (!resp.ok || !resp.body) {
+                    const t = await resp.text().catch(() => '');
+                    throw new Error('修订请求失败 ' + resp.status + ' ' + t);
+                }
+
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder();
+                let buf = '';
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    buf += decoder.decode(value, { stream: true });
+                    let nl;
+                    while ((nl = buf.indexOf('\n')) >= 0) {
+                        const line = buf.slice(0, nl).trim();
+                        buf = buf.slice(nl + 1);
+                        if (!line.startsWith('data:')) continue;
+                        const data = line.slice(5).trim();
+                        if (data === '[DONE]') break;
+                        try {
+                            const json = JSON.parse(data);
+                            const c = json?.choices?.[0]?.delta?.content;
+                            if (c) {
+                                newContent += c;
+                                updateMessageText(msgEl, newContent);
+                            }
+                        } catch {}
+                    }
+                }
+
+                // 实时把修订结果写回该消息对象（确定时即生效）
+                msgObj.content = newContent;
+                finishEditUI(msgEl);
+            } catch (err) {
+                addMessage('error', '❌ 修改失败: ' + (err.message || err));
+            } finally {
+                isProcessing = false;
+                setStatus('就绪', 'idle');
+                abortController = null;
+            }
+        }
+
+        // 修订完成：替换为「继续修改 / 确定 / 取消」
+        function finishEditUI(msgEl) {
+            if (msgEl._editBox) {
+                msgEl._editBox.remove();
+                msgEl._editBox = null;
+            }
+            const actions = msgEl.querySelector('.msg-actions');
+            actions.style.display = 'flex';
+            actions.innerHTML = '';
+            actions.appendChild(mkBtn('↻ 继续修改', () => startEdit(msgEl, msgEl._msgObj, actions)));
+            actions.appendChild(mkBtn('✅ 确定', () => confirmEdit(msgEl)));
+            actions.appendChild(mkBtn('✖ 取消', () => cancelEdit(msgEl, msgEl._msgObj, actions)));
+        }
+
+        // 取消：恢复原始内容，回到单一「修改」按钮
+        function cancelEdit(msgEl, msgObj, actions) {
+            if (msgEl._editBox) {
+                msgEl._editBox.remove();
+                msgEl._editBox = null;
+            }
+            msgObj.content = msgEl._origContent;
+            updateMessageText(msgEl, msgObj.content);
+            resetToModifyButton(msgEl, actions);
+            addMessage('system', '↩️ 已取消修改，保留原始回复');
+        }
+
+        // 确定：把对话历史截断到该 assistant 消息之后（丢弃其后的旧内容），并落定修订
+        function confirmEdit(msgEl) {
+            const msgObj = msgEl._msgObj;
+            const idx = chat.messages.indexOf(msgObj);
+            if (idx >= 0) {
+                chat.messages.length = idx + 1;
+            }
+            msgEl._origContent = msgObj.content;
+            const actions = msgEl.querySelector('.msg-actions');
+            resetToModifyButton(msgEl, actions);
+
+            // 同步移除该消息之后、界面上仍显示的旧气泡
+            let node = msgEl.nextElementSibling;
+            while (node) {
+                const next = node.nextElementSibling;
+                node.remove();
+                node = next;
+            }
+            addMessage('system', '✅ 已更新对话历史（该回复之后的旧内容已移除，可继续对话）');
+        }
+
+        function resetToModifyButton(msgEl, actions) {
+            if (!actions) actions = msgEl.querySelector('.msg-actions');
+            actions.style.display = 'flex';
+            actions.innerHTML = '';
+            actions.appendChild(mkBtn('✏️ 修改', () => startEdit(msgEl, msgEl._msgObj, actions)));
+        }
+
         // ========== 模型管理 ==========
         async function loadModels() {
             try {
@@ -1162,7 +1419,13 @@
                     }
 
                     // 没有工具调用 -> 本轮回复结束
-                    if (toolCalls.length === 0) break;
+                    if (toolCalls.length === 0) {
+                        const lastMsg = chat.messages[chat.messages.length - 1];
+                        if (lastMsg && lastMsg.role === 'assistant' && streamingMessage) {
+                            attachModify(streamingMessage, lastMsg);
+                        }
+                        break;
+                    }
 
                     // 执行工具并回填结果
                     toolRound++;

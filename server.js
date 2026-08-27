@@ -248,49 +248,89 @@ function searchKB(query) {
 
 // ============== 代理接口 ==============
 
+// 把一次模型请求以 SSE 流式转发给客户端
+async function proxyStream(res, payload) {
+  const response = await fetch(process.env.URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${CONFIG.apiKey}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+  });
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value);
+    res.write(chunk);
+  }
+  res.end();
+}
+
 // 1. 聊天接口（流式）
 app.post('/api/chat', async (req, res) => {
   try {
     const { messages, model, tools, stream = true } = req.body;
 
-    const response = await fetch(process.env.URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${CONFIG.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: model || CONFIG.defaultModel,
-        messages,
-        tools: tools || [],
-        stream,
-      }),
-    });
-
-    // 流式响应
-    if (stream) {
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
+    if (!stream) {
+      const response = await fetch(process.env.URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${CONFIG.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: model || CONFIG.defaultModel,
+          messages,
+          tools: tools || [],
+          stream: false,
+        }),
       });
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value);
-        res.write(chunk);
-      }
-      res.end();
-    } else {
       const data = await response.json();
       res.json(data);
+      return;
     }
+
+    await proxyStream(res, {
+      model: model || CONFIG.defaultModel,
+      messages,
+      tools: tools || [],
+      stream: true,
+    });
   } catch (error) {
     console.error('代理错误:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 修订接口（流式）
+//    接收「对话前缀 + 待修订的上一条 assistant 内容 + 修改意见」，
+//    由模型按意见重新生成该条回复。
+app.post('/api/revise', async (req, res) => {
+  try {
+    const { messages, model, tools } = req.body;
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({ error: '缺少 messages 参数' });
+    }
+
+    await proxyStream(res, {
+      model: model || CONFIG.defaultModel,
+      messages,
+      tools: tools || [],
+      stream: true,
+    });
+  } catch (error) {
+    console.error('修订错误:', error);
     res.status(500).json({ error: error.message });
   }
 });
