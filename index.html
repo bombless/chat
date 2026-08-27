@@ -1273,8 +1273,17 @@
             actions.style.display = 'flex';
             actions.innerHTML = '';
             actions.appendChild(mkBtn('↻ 继续修改', () => startEdit(msgEl, msgEl._msgObj, actions)));
-            actions.appendChild(mkBtn('✅ 确定', () => confirmEdit(msgEl)));
+            actions.appendChild(mkBtn('✅ 确定', () => showConfirmChoice(msgEl)));
             actions.appendChild(mkBtn('✖ 取消', () => cancelEdit(msgEl, msgEl._msgObj, actions)));
+        }
+
+        // 确定时让用户选择：保留 / 移除该回复之后的内容
+        function showConfirmChoice(msgEl) {
+            const actions = msgEl.querySelector('.msg-actions');
+            actions.innerHTML = '';
+            actions.appendChild(mkBtn('保留后续对话', () => confirmEdit(msgEl, false)));
+            actions.appendChild(mkBtn('移除后续对话', () => confirmEdit(msgEl, true)));
+            actions.appendChild(mkBtn('↩ 返回', () => finishEditUI(msgEl)));
         }
 
         // 取消：恢复原始内容，回到单一「修改」按钮
@@ -1289,25 +1298,34 @@
             addMessage('system', '↩️ 已取消修改，保留原始回复');
         }
 
-        // 确定：把对话历史截断到该 assistant 消息之后（丢弃其后的旧内容），并落定修订
-        function confirmEdit(msgEl) {
+        // 确定：落定修订内容到对话历史。
+        //   removeLater=true  -> 截断到该 assistant 消息之后，并移除界面上的后续旧气泡
+        //   removeLater=false -> 仅更新该条内容，保留其后所有对话（内容可能基于旧回复，仅供参考）
+        function confirmEdit(msgEl, removeLater) {
             const msgObj = msgEl._msgObj;
             const idx = chat.messages.indexOf(msgObj);
             if (idx >= 0) {
-                chat.messages.length = idx + 1;
+                if (removeLater) {
+                    chat.messages.length = idx + 1;
+                }
+                // 无论是否移除，msgObj.content 已在修订时实时更新，历史中该条内容已是新版本
             }
             msgEl._origContent = msgObj.content;
             const actions = msgEl.querySelector('.msg-actions');
             resetToModifyButton(msgEl, actions);
 
-            // 同步移除该消息之后、界面上仍显示的旧气泡
-            let node = msgEl.nextElementSibling;
-            while (node) {
-                const next = node.nextElementSibling;
-                node.remove();
-                node = next;
+            if (removeLater) {
+                // 同步移除该消息之后、界面上仍显示的旧气泡
+                let node = msgEl.nextElementSibling;
+                while (node) {
+                    const next = node.nextElementSibling;
+                    node.remove();
+                    node = next;
+                }
+                addMessage('system', '✅ 已更新对话历史（该回复之后的旧内容已移除，可继续对话）');
+            } else {
+                addMessage('system', '✅ 已更新该条回复，后续对话已保留（其内容仍基于旧回复，仅供参考）');
             }
-            addMessage('system', '✅ 已更新对话历史（该回复之后的旧内容已移除，可继续对话）');
         }
 
         function resetToModifyButton(msgEl, actions) {
