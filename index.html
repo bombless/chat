@@ -697,7 +697,7 @@
         const MODELS_URL = '/api/models'
         const CONFIG = {
             maxHistory: 50,
-            systemPrompt: 'You are a helpful assistant. 当用户的问题涉及已抓取保存的网页内容时，请使用 search_knowledge 工具在知识库中检索。如果需要了解一个尚未保存的网页，请使用 fetch_webpage 工具抓取它。回答时请基于知识库返回的真实内容，并注明信息来源网址。',
+            systemPrompt: 'You are a helpful assistant. 当用户的问题涉及已抓取保存的网页内容时，请使用 search_knowledge 工具在知识库中检索。调用该工具前，请先从用户问题中提炼出最能代表主题的关键词（如型号、产品名、专有名词，多个关键词用空格分隔），不要把整句自然语言问句直接作为检索词。例如查询「191步枪和171冲锋枪分别多重」时应传入「191 171」或「191步枪 171冲锋枪」。如果需要了解一个尚未保存的网页，请使用 fetch_webpage 工具抓取它。回答时请基于知识库返回的真实内容，并注明信息来源网址。',
         };
 
         // 供模型调用的工具定义
@@ -706,11 +706,11 @@
                 type: 'function',
                 function: {
                     name: 'search_knowledge',
-                    description: '在用户已抓取保存的网页知识库中检索相关信息。当用户的问题涉及某个已保存网页、文章，或需要引用之前抓取的网页内容时调用。',
+                    description: '在用户已抓取保存的网页知识库中检索相关信息。调用时请先提炼最能代表主题的关键词（如型号、产品名、专有名词），多个关键词用空格分隔；不要把整句自然语言问句直接作为检索词。例如查询「191步枪和171冲锋枪分别多重」时应传入「191 171」或「191步枪 171冲锋枪」。',
                     parameters: {
                         type: 'object',
                         properties: {
-                            query: { type: 'string', description: '检索关键词或问题' }
+                            query: { type: 'string', description: '提炼后的检索关键词，多个用空格分隔，例如 "191 171" 或 "QCQ-171 191步枪"' }
                         },
                         required: ['query']
                     }

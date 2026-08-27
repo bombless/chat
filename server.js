@@ -196,23 +196,42 @@ async function summarize(title, text) {
   return data?.choices?.[0]?.message?.content || '(摘要生成失败)';
 }
 
+// 从查询中提炼关键词（型号/数字 + 中文片段），避免整句中文无法命中
+function extractKeywords(query) {
+  const keywords = new Set();
+  // 1) 英文 / 数字 / 型号片段，如 191、171、QCQ-171、CS/LS7
+  const alnum = query.match(/[A-Za-z0-9][A-Za-z0-9\/\.\-]*/g) || [];
+  alnum.forEach((t) => { if (t.length >= 1) keywords.add(t); });
+  // 2) 去掉停用词与标点后的中文片段（如「步枪」「冲锋枪」）
+  const stop = /(和|与|及|以及|并且|分别|各自|各|多|重|重量|轻|是|在|的|了|吗|呢|怎么|如何|什么|哪|请|告诉|我|我们|关于|对比|比较|区别|有|没有|多少|几|参数|信息|资料|相关|内容|介绍|一下|这个|那个|一种|把|将|查询|搜|知识库|知道|能否|是否|还是|或者|比如|例如|因为|所以)/g;
+  const cleaned = query
+    .replace(stop, ' ')
+    .replace(/[^\u4e00-\u9fffA-Za-z0-9]+/g, ' ');
+  cleaned.split(/\s+/).forEach((w) => { if (w.length >= 2) keywords.add(w); });
+  let list = [...keywords].filter(Boolean);
+  if (list.length === 0) list = [query]; // 退化：兜底用原句
+  return list;
+}
+
 // 在知识库中检索
 function searchKB(query) {
-  const terms = query
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((t) => t.length > 0);
+  const keywords = extractKeywords(query).map((k) => k.toLowerCase());
 
   const scored = knowledgeBase
     .map((entry) => {
+      const hayTitle = entry.title.toLowerCase();
       const hay = (entry.title + ' ' + entry.summary + ' ' + entry.text).toLowerCase();
       let score = 0;
-      for (const t of terms) {
-        if (hay.includes(t)) score += 2;
+      const hits = [];
+      for (const k of keywords) {
+        if (!k) continue;
+        if (hay.includes(k)) {
+          score += 1;
+          if (hayTitle.includes(k)) score += 3; // 标题命中加权
+          hits.push(k);
+        }
       }
-      // 标题命中加权
-      if (entry.title.toLowerCase().includes(query.toLowerCase())) score += 3;
-      return { entry, score };
+      return { entry, score, hits: [...new Set(hits)] };
     })
     .filter((x) => x.score > 0)
     .sort((a, b) => b.score - a.score)
@@ -223,6 +242,7 @@ function searchKB(query) {
     url: x.entry.url,
     summary: x.entry.summary,
     snippet: x.entry.text.slice(0, 1800),
+    matched: x.hits,
   }));
 }
 
