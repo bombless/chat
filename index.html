@@ -747,6 +747,7 @@
             </div>
             <div class="header-actions">
                 <button class="btn btn-warning" id="btnKb" title="打开知识库面板">📚 <span>知识库</span></button>
+                <button class="btn btn-warning" id="btnMcp" title="管理 MCP Server">🔌 <span>MCP</span></button>
                 <button class="btn btn-warning" id="btnModels" title="刷新模型列表">📋 <span>模型</span></button>
                 <button class="btn btn-danger" id="btnReset">🔄 <span>重置</span></button>
                 <button class="btn btn-success" id="btnClear">🗑️ <span>清屏</span></button>
@@ -761,6 +762,17 @@
                 <button class="kb-fetch-btn" id="kbFetchBtn">抓取</button>
             </div>
             <div class="kb-list" id="kbList"></div>
+        </div>
+
+        <!-- ====== MCP 面板 ====== -->
+        <div class="kb-panel" id="mcpPanel">
+            <h4>🔌 MCP Server <span class="kb-status" id="mcpStatus"></span></h4>
+            <div class="kb-list" id="mcpList"></div>
+            <div class="kb-input-row">
+                <input type="text" id="mcpIdInput" placeholder="Server ID，例如 context7" />
+                <input type="text" id="mcpUrlInput" placeholder="MCP Endpoint，例如 https://.../mcp" />
+                <button class="kb-fetch-btn" id="mcpAddBtn">添加</button>
+            </div>
         </div>
 
         <!-- ====== 消息区域 ====== -->
@@ -946,11 +958,12 @@
                             if (choice?.finish_reason === 'tool_calls') {
                                 const calls = [];
                                 for (const tc of Object.values(toolCallsAcc)) {
-                                    const call = {
-                                        id: tc.id,
-                                        name: tc.function.name,
-                                        arguments: JSON.parse(tc.function.arguments),
-                                    };
+                                    const rawArguments = JSON.parse(tc.function.arguments);
+                                    const rawName = tc.function.name;
+                                    const wrapperMatch = /^mcp__([^_]+(?:_[^_]+)*)__([\s\S]+)$/.exec(rawName);
+                                    const call = wrapperMatch
+                                        ? { id: tc.id, name: wrapperMatch[1], arguments: { action: 'call', tool: wrapperMatch[2], arguments: rawArguments } }
+                                        : { id: tc.id, name: rawName, arguments: rawArguments };
                                     calls.push(call);
                                     yield 'o' + JSON.stringify(call);
                                 }
@@ -1020,6 +1033,13 @@
             kbFetchBtn: document.getElementById('kbFetchBtn'),
             kbList: document.getElementById('kbList'),
             kbStatus: document.getElementById('kbStatus'),
+            btnMcp: document.getElementById('btnMcp'),
+            mcpPanel: document.getElementById('mcpPanel'),
+            mcpStatus: document.getElementById('mcpStatus'),
+            mcpList: document.getElementById('mcpList'),
+            mcpIdInput: document.getElementById('mcpIdInput'),
+            mcpUrlInput: document.getElementById('mcpUrlInput'),
+            mcpAddBtn: document.getElementById('mcpAddBtn'),
         };
 
         let chat = null;
@@ -1725,6 +1745,49 @@
                 fetchUrl();
             }
         });
+
+        // ========== MCP 管理 ==========
+        async function loadMcpServers() {
+            try {
+                const resp = await fetch('/api/mcp/servers');
+                const data = await resp.json();
+                const servers = data.servers || [];
+                dom.mcpStatus.textContent = '(' + servers.length + ' 个)';
+                dom.mcpList.innerHTML = '';
+                if (!servers.length) { dom.mcpList.innerHTML = '<div class="kb-empty">暂无 MCP Server</div>'; return; }
+                servers.forEach((server) => {
+                    const div = document.createElement('div'); div.className = 'kb-item';
+                    const head = document.createElement('div'); head.className = 'kb-item-head';
+                    const info = document.createElement('div'); info.style.flex='1';
+                    const title = document.createElement('div'); title.className='kb-title';
+                    title.textContent = (server.enabled === false ? '○ ' : '● ') + (server.name || server.id) + (server.connected ? ' · Connected' : ' · Not connected');
+                    const url = document.createElement('div'); url.className='kb-url'; url.textContent = server.url || server.endpoint || '';
+                    info.append(title,url); head.appendChild(info);
+                    const btn = document.createElement('button'); btn.className='kb-fetch-btn'; btn.textContent = server.connected ? '断开' : '连接';
+                    btn.addEventListener('click', async () => {
+                        const action = server.connected ? 'disconnect' : 'connect';
+                        const r = await fetch('/api/mcp/servers/' + encodeURIComponent(server.id) + '/' + action, {method:'POST'});
+                        if (!r.ok) { const d=await r.json().catch(()=>({})); addMessage('error','❌ MCP 操作失败: '+(d.error||r.status)); }
+                        loadMcpServers();
+                    });
+                    head.appendChild(btn); div.appendChild(head); dom.mcpList.appendChild(div);
+                });
+            } catch (e) { dom.mcpStatus.textContent='(加载失败)'; }
+        }
+
+        async function addMcpServer() {
+            const id = dom.mcpIdInput.value.trim(); const url = dom.mcpUrlInput.value.trim();
+            if (!id || !url) return;
+            dom.mcpAddBtn.disabled=true;
+            try {
+                const resp=await fetch('/api/mcp/servers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,name:id,url,enabled:true,transport:'streamable-http',auth:{type:'none'}})});
+                const data=await resp.json(); if(!resp.ok) throw new Error(data.error || resp.status);
+                dom.mcpIdInput.value=''; dom.mcpUrlInput.value=''; loadMcpServers();
+            } catch(e) { addMessage('error','❌ 添加 MCP 失败: '+e.message); } finally { dom.mcpAddBtn.disabled=false; }
+        }
+
+        dom.btnMcp.addEventListener('click', () => { dom.mcpPanel.classList.toggle('open'); if(dom.mcpPanel.classList.contains('open')) loadMcpServers(); });
+        dom.mcpAddBtn.addEventListener('click', addMcpServer);
 
         // ========== 初始化 ==========
         async function init() {

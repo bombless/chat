@@ -5,7 +5,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
-const { LocalMcpClient, mcpToolToOpenAi, mcpResultToText } = require('./mcp-client');
+const { McpRuntime, McpServerRegistry, mcpResultToText } = require('./mcp-client');
 const app = express();
 
 // ============== 配置 ==============
@@ -19,18 +19,35 @@ const CONFIG = {
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
 };
 
-const localMcp = new LocalMcpClient({
-  url: process.env.MCP_URL || 'http://127.0.0.1:8787/mcp',
+const mcpRuntime = new McpRuntime({
+  leaseTtlMs: Number(process.env.MCP_TOOL_LEASE_TTL_MS) || 10 * 60 * 1000,
+  maxActiveTools: Number(process.env.MCP_MAX_ACTIVE_TOOLS) || 16,
 });
-let localMcpToolsCache = null;
+const mcpRegistry = new McpServerRegistry({ runtime: mcpRuntime });
 
-async function getLocalMcpTools() {
-  if (!localMcp.enabled) return [];
-  if (!localMcpToolsCache) {
-    const tools = await localMcp.listTools();
-    localMcpToolsCache = tools.map(mcpToolToOpenAi);
+function loadMcpServers() {
+  const defaults = [{
+    id: process.env.MCP_SERVER_ID || 'local_mcp',
+    name: process.env.MCP_SERVER_NAME || '本地MCP',
+    url: process.env.MCP_URL || 'http://127.0.0.1:8787/mcp',
+    enabled: process.env.MCP_ENABLED !== '0',
+    transport: 'streamable-http',
+    auth: { type: process.env.MCP_AUTH_TYPE || 'none' },
+  }];
+  let configured = defaults;
+  if (process.env.MCP_SERVERS_JSON) {
+    try { configured = JSON.parse(process.env.MCP_SERVERS_JSON); }
+    catch (e) { console.warn('MCP_SERVERS_JSON 无法解析，使用 MCP_URL:', e.message); }
   }
-  return localMcpToolsCache;
+  for (const server of configured) {
+    try { mcpRegistry.register(server); } catch (e) { console.warn('MCP Server 配置无效:', e.message); }
+  }
+}
+loadMcpServers();
+
+function getMcpToolsForRequest() {
+  mcpRuntime.expireTools();
+  return [...mcpRegistry.wrappers(), ...mcpRegistry.activeTools()];
 }
 
 // 无头浏览器实例（懒加载，复用）
@@ -297,16 +314,14 @@ app.post('/api/chat', async (req, res) => {
   try {
     const { messages, model, tools, stream = true } = req.body;
 
-    // 把 local 分支的 chatgpt-mcp 工具定义注入现有 OpenAI-compatible tools 列表。
+    // Conversation history is stable; MCP capabilities are rebuilt for each request.
     const clientTools = Array.isArray(tools) ? tools : [];
-    let mergedTools = clientTools;
-    try {
-      const mcpTools = await getLocalMcpTools();
-      const names = new Set(clientTools.map((t) => t?.function?.name));
-      mergedTools = [...clientTools, ...mcpTools.filter((t) => !names.has(t.function.name))];
-    } catch (error) {
-      console.warn('本地 MCP 不可用，继续使用原有工具:', error.message);
-    }
+    const names = new Set(clientTools.map((t) => t?.function?.name));
+    const mcpTools = getMcpToolsForRequest();
+    const mergedTools = [
+      ...clientTools,
+      ...mcpTools.filter((tool) => !names.has(tool?.function?.name)),
+    ];
 
     if (!stream) {
       const response = await fetch(process.env.URL, {
@@ -339,16 +354,90 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
-// MCP 工具调用接口，供现有浏览器端 tool-call 循环执行。
+// MCP Registry / Runtime API
+app.get('/api/mcp/servers', (_req, res) => {
+  res.json({ servers: mcpRegistry.list() });
+});
+
+app.post('/api/mcp/servers', (req, res) => {
+  try {
+    const server = req.body || {};
+    const client = mcpRegistry.register({
+      id: server.id, name: server.name, url: server.url || server.endpoint,
+      enabled: server.enabled !== false, transport: server.transport || 'streamable-http',
+      auth: server.auth || { type: 'none' },
+    });
+    res.status(201).json({ ok: true, server: mcpRegistry.list().find((x) => x.id === client.id) });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+
+app.put('/api/mcp/servers/:id', (req, res) => {
+  try {
+    const current = mcpRegistry.list().find((x) => x.id === req.params.id);
+    if (!current) return res.status(404).json({ error: 'MCP Server 不存在' });
+    const client = mcpRegistry.register({ ...current, ...(req.body || {}), id: req.params.id, url: (req.body || {}).url || (req.body || {}).endpoint || current.url });
+    res.json({ ok: true, server: mcpRegistry.list().find((x) => x.id === client.id) });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+
+app.delete('/api/mcp/servers/:id', (req, res) => {
+  if (!mcpRegistry.get(req.params.id)) return res.status(404).json({ error: 'MCP Server 不存在' });
+  mcpRegistry.remove(req.params.id);
+  res.json({ ok: true });
+});
+
+app.post('/api/mcp/servers/:id/connect', async (req, res) => {
+  try {
+    const client = mcpRegistry.get(req.params.id);
+    if (!client) return res.status(404).json({ error: 'MCP Server 不存在' });
+    await client.initialize();
+    res.json({ ok: true, server: mcpRegistry.list().find((x) => x.id === req.params.id) });
+  } catch (error) { res.status(502).json({ error: error.message }); }
+});
+
+app.post('/api/mcp/servers/:id/disconnect', (req, res) => {
+  const client = mcpRegistry.get(req.params.id);
+  if (!client) return res.status(404).json({ error: 'MCP Server 不存在' });
+  client.initialized = false; client.sessionId = null; client.tools = null; client.toolMap.clear();
+  for (const key of mcpRuntime.activeTools.keys()) if (key.startsWith(req.params.id + ':')) mcpRuntime.activeTools.delete(key);
+  res.json({ ok: true });
+});
+
+app.get('/api/mcp/servers/:id/tools', async (req, res) => {
+  try {
+    const client = mcpRegistry.get(req.params.id);
+    if (!client) return res.status(404).json({ error: 'MCP Server 不存在' });
+    const tools = await client.discover();
+    res.json({ tools, activeTools: mcpRuntime.getActiveLeases().filter((x) => x.serverId === req.params.id) });
+  } catch (error) { res.status(502).json({ error: error.message, tools: [] }); }
+});
+
+app.post('/api/mcp/servers/:id/help', async (req, res) => {
+  try {
+    const client = mcpRegistry.get(req.params.id);
+    if (!client) return res.status(404).json({ error: 'MCP Server 不存在' });
+    res.json(await client.help(req.body || {}));
+  } catch (error) { res.status(502).json({ error: error.message }); }
+});
+
+app.post('/api/mcp/servers/:id/call', async (req, res) => {
+  try {
+    const client = mcpRegistry.get(req.params.id);
+    if (!client) return res.status(404).json({ error: 'MCP Server 不存在' });
+    const { tool, arguments: args } = req.body || {};
+    if (!tool) return res.status(400).json({ error: '缺少 tool 参数' });
+    const result = await client.callTool(tool, args || {});
+    res.json({ content: mcpResultToText(result), raw: result });
+  } catch (error) { res.status(502).json({ error: error.message }); }
+});
+
+// Backward-compatible wrapper execution endpoint. It accepts either a stable
+// server wrapper name (local_mcp/context7/...) or a runtime-only namespaced name.
 app.post('/api/mcp/call', async (req, res) => {
   try {
     const { name, arguments: args } = req.body || {};
     if (!name) return res.status(400).json({ error: '缺少 name 参数' });
-    const known = await getLocalMcpTools();
-    if (!known.some((tool) => tool.function.name === name)) {
-      return res.status(404).json({ error: `未知 MCP 工具: ${name}` });
-    }
-    const result = await localMcp.callTool(name, args || {});
+    const result = await mcpRegistry.call(name, args || {});
     res.json({ content: mcpResultToText(result), raw: result });
   } catch (error) {
     console.error('MCP 工具调用失败:', error);
@@ -356,14 +445,9 @@ app.post('/api/mcp/call', async (req, res) => {
   }
 });
 
-// 返回 MCP 工具定义，前端会把它们合并进现有 CHAT_TOOLS。
-app.get('/api/mcp/tools', async (_req, res) => {
-  try {
-    const tools = await getLocalMcpTools();
-    res.json({ enabled: localMcp.enabled, tools });
-  } catch (error) {
-    res.status(503).json({ enabled: localMcp.enabled, tools: [], error: error.message });
-  }
+app.get('/api/mcp/tools', (_req, res) => {
+  mcpRuntime.expireTools();
+  res.json({ enabled: mcpRegistry.list().some((x) => x.enabled !== false), tools: getMcpToolsForRequest(), servers: mcpRegistry.list(), activeLeases: mcpRuntime.getActiveLeases() });
 });
 
 // 修订接口（流式）
@@ -484,7 +568,7 @@ app.delete('/api/kb/:id', (req, res) => {
 
 // 7. 健康检查
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString(), kbCount: knowledgeBase.length, mcp: localMcp.enabled });
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), kbCount: knowledgeBase.length, mcp: { servers: mcpRegistry.list(), activeLeases: mcpRuntime.getActiveLeases() } });
 });
 
 app.get('/', (req, res) => {
@@ -544,7 +628,7 @@ app.listen(CONFIG.port, () => {
   console.log(`📡 聊天接口: http://localhost:${CONFIG.port}/api/chat`);
   console.log(`📋 模型接口: http://localhost:${CONFIG.port}/api/models`);
   console.log(`📚 知识库条目: ${knowledgeBase.length}`);
-  console.log(`🔌 本地 MCP: ${localMcp.enabled ? localMcp.url : 'disabled'}`);
+  console.log('🔌 MCP Servers: ' + mcpRegistry.list().map((x) => x.id + '=' + (x.enabled ? x.url : 'disabled')).join(', '));
 });
 
 // 退出时关闭无头浏览器

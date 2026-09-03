@@ -145,11 +145,12 @@ class Chat {
             // 到这里 toolCallsAcc 已经攒完了所有碎片
             const calls = []
             for (const tc of Object.values(toolCallsAcc)) {
-              const call = {
-                id: tc.id,
-                name: tc.function.name,
-                arguments: JSON.parse(tc.function.arguments), // 解析参数
-              }
+              const rawArguments = JSON.parse(tc.function.arguments);
+              const rawName = tc.function.name;
+              const wrapperMatch = /^mcp__([^_]+(?:_[^_]+)*)__([\s\S]+)$/.exec(rawName);
+              const call = wrapperMatch
+                ? { id: tc.id, name: wrapperMatch[1], arguments: { action: 'call', tool: wrapperMatch[2], arguments: rawArguments } }
+                : { id: tc.id, name: rawName, arguments: rawArguments };
               calls.push(call)
               yield 'o' + JSON.stringify(call)
               console.log('✅ 完整 tool_call:', call)

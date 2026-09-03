@@ -139,6 +139,18 @@ class McpRuntime {
     }
     return result;
   }
+
+  getServers() {
+    return [...this.servers.values()].map((server) => ({
+      id: server.id, name: server.name, endpoint: server.endpoint,
+      enabled: server.enabled !== false, connected: Boolean(server.client?.initialized),
+    }));
+  }
+
+  getActiveLeases(now = Date.now()) {
+    this.expireTools(now);
+    return [...this.activeTools.values()].map((lease) => ({ ...lease }));
+  }
 }
 
 class LocalMcpClient {
@@ -241,6 +253,11 @@ class LocalMcpClient {
         };
       }
       this.runtime.activate(this.id, options.tool);
+    } else {
+      // Discovery activates only a bounded working set; the full catalog stays in runtime state.
+      filtered.slice(0, this.runtime.maxActiveTools).forEach((tool) => {
+        this.runtime.activate(this.id, tool.name);
+      });
     }
 
     return {
@@ -285,6 +302,57 @@ class LocalMcpClient {
   }
 }
 
+class McpServerRegistry {
+  constructor(options = {}) {
+    this.runtime = options.runtime || new McpRuntime(options);
+    this.clients = new Map();
+  }
+
+  register(config) {
+    if (!config?.id || !config.url) throw new Error('MCP server id and url are required');
+    const existing = this.clients.get(config.id);
+    if (existing) {
+      existing.client.url = config.url;
+      existing.client.enabled = config.enabled !== false;
+      existing.client.name = config.name || existing.client.name;
+      existing.config = { ...existing.config, ...config };
+      const runtimeServer = this.runtime.servers.get(config.id);
+      if (runtimeServer) Object.assign(runtimeServer, { name: existing.client.name, endpoint: config.url, enabled: config.enabled !== false });
+      return existing.client;
+    }
+    const client = new LocalMcpClient({
+      id: config.id, name: config.name || config.id, url: config.url,
+      enabled: config.enabled !== false, runtime: this.runtime,
+    });
+    this.clients.set(config.id, { config: { ...config }, client });
+    return client;
+  }
+
+  remove(id) { this.clients.delete(id); this.runtime.servers.delete(id);
+    for (const key of this.runtime.activeTools.keys()) if (key.startsWith(id + ':')) this.runtime.activeTools.delete(key);
+  }
+
+  get(id) { return this.clients.get(id)?.client || null; }
+  list() { return [...this.clients.values()].map(({ config, client }) => ({
+    ...config, connected: Boolean(client.initialized),
+  })); }
+  wrappers() { return this.runtime.getWrapperTools(); }
+  activeTools() { return this.runtime.getActiveOpenAiTools(); }
+
+  async call(name, args = {}) {
+    if (this.clients.has(name)) return this.clients.get(name).client.callTool(name, args);
+    const match = /^mcp__([^_]+(?:_[^_]+)*)__([\s\S]+)$/.exec(name);
+    if (match) {
+      const serverId = match[1];
+      const toolName = match[2];
+      const client = this.get(serverId);
+      if (!client) throw new Error('未知 MCP Server: ' + serverId);
+      return client.callTool(toolName, args);
+    }
+    throw new Error('未知 MCP 工具: ' + name);
+  }
+}
+
 function mcpToolToOpenAi(tool, serverId) {
   return {
     type: 'function',
@@ -317,6 +385,7 @@ function mcpResultToText(result) {
 
 module.exports = {
   McpRuntime,
+  McpServerRegistry,
   LocalMcpClient,
   createMcpWrapper,
   mcpToolToOpenAi,
