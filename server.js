@@ -5,6 +5,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const { LocalMcpClient, mcpToolToOpenAi, mcpResultToText } = require('./mcp-client');
 const app = express();
 
 // ============== 配置 ==============
@@ -17,6 +18,20 @@ const CONFIG = {
   fetchUserAgent:
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
 };
+
+const localMcp = new LocalMcpClient({
+  url: process.env.MCP_URL || 'http://127.0.0.1:8787/mcp',
+});
+let localMcpToolsCache = null;
+
+async function getLocalMcpTools() {
+  if (!localMcp.enabled) return [];
+  if (!localMcpToolsCache) {
+    const tools = await localMcp.listTools();
+    localMcpToolsCache = tools.map(mcpToolToOpenAi);
+  }
+  return localMcpToolsCache;
+}
 
 // 无头浏览器实例（懒加载，复用）
 let browser = null;
@@ -282,6 +297,17 @@ app.post('/api/chat', async (req, res) => {
   try {
     const { messages, model, tools, stream = true } = req.body;
 
+    // 把 local 分支的 chatgpt-mcp 工具定义注入现有 OpenAI-compatible tools 列表。
+    const clientTools = Array.isArray(tools) ? tools : [];
+    let mergedTools = clientTools;
+    try {
+      const mcpTools = await getLocalMcpTools();
+      const names = new Set(clientTools.map((t) => t?.function?.name));
+      mergedTools = [...clientTools, ...mcpTools.filter((t) => !names.has(t.function.name))];
+    } catch (error) {
+      console.warn('本地 MCP 不可用，继续使用原有工具:', error.message);
+    }
+
     if (!stream) {
       const response = await fetch(process.env.URL, {
         method: 'POST',
@@ -292,7 +318,7 @@ app.post('/api/chat', async (req, res) => {
         body: JSON.stringify({
           model: model || CONFIG.defaultModel,
           messages,
-          tools: tools || [],
+          tools: mergedTools,
           stream: false,
         }),
       });
@@ -304,12 +330,39 @@ app.post('/api/chat', async (req, res) => {
     await proxyStream(res, {
       model: model || CONFIG.defaultModel,
       messages,
-      tools: tools || [],
+      tools: mergedTools,
       stream: true,
     });
   } catch (error) {
     console.error('代理错误:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// MCP 工具调用接口，供现有浏览器端 tool-call 循环执行。
+app.post('/api/mcp/call', async (req, res) => {
+  try {
+    const { name, arguments: args } = req.body || {};
+    if (!name) return res.status(400).json({ error: '缺少 name 参数' });
+    const known = await getLocalMcpTools();
+    if (!known.some((tool) => tool.function.name === name)) {
+      return res.status(404).json({ error: `未知 MCP 工具: ${name}` });
+    }
+    const result = await localMcp.callTool(name, args || {});
+    res.json({ content: mcpResultToText(result), raw: result });
+  } catch (error) {
+    console.error('MCP 工具调用失败:', error);
+    res.status(502).json({ error: error.message });
+  }
+});
+
+// 返回 MCP 工具定义，前端会把它们合并进现有 CHAT_TOOLS。
+app.get('/api/mcp/tools', async (_req, res) => {
+  try {
+    const tools = await getLocalMcpTools();
+    res.json({ enabled: localMcp.enabled, tools });
+  } catch (error) {
+    res.status(503).json({ enabled: localMcp.enabled, tools: [], error: error.message });
   }
 });
 
@@ -431,12 +484,59 @@ app.delete('/api/kb/:id', (req, res) => {
 
 // 7. 健康检查
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString(), kbCount: knowledgeBase.length });
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), kbCount: knowledgeBase.length, mcp: localMcp.enabled });
 });
 
 app.get('/', (req, res) => {
-    res.sendFile(path.resolve(__dirname, 'index.html'));
-})
+  const file = path.resolve(__dirname, 'index.html');
+  fs.readFile(file, 'utf8', (error, html) => {
+    if (error) return res.status(500).send(error.message);
+
+    // 不改动现有 index.html：在响应时把 MCP 工具注册/执行桥接脚本注入页面。
+    const injection = `
+<script>
+(() => {
+  const mcpReady = fetch('/api/mcp/tools').then(async (r) => {
+    if (!r.ok) return [];
+    const data = await r.json();
+    if (typeof CHAT_TOOLS !== 'undefined') CHAT_TOOLS.push(...(data.tools || []));
+    return data.tools || [];
+  }).catch(() => []);
+
+  if (typeof sendMessage === 'function') {
+    const originalSendMessage = sendMessage;
+    sendMessage = async function () {
+      await mcpReady;
+      return originalSendMessage();
+    };
+  }
+
+  if (typeof executeTool === 'function') {
+    const originalExecuteTool = executeTool;
+    executeTool = async function (call) {
+      if (call && call.name && call.name !== 'search_knowledge' && call.name !== 'fetch_webpage') {
+        try {
+          const resp = await fetch('/api/mcp/call', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: call.name, arguments: call.arguments || {} }),
+          });
+          const data = await resp.json().catch(() => ({}));
+          if (!resp.ok) return 'MCP 工具执行失败: ' + (data.error || resp.status);
+          return data.content || JSON.stringify(data.raw || data);
+        } catch (e) {
+          return 'MCP 工具执行出错: ' + e.message;
+        }
+      }
+      return originalExecuteTool(call);
+    };
+  }
+})();
+</script>
+`;
+    res.type('html').send(html.replace('</body>', injection + '</body>'));
+  });
+});
 
 // ============== 启动服务 ==============
 app.listen(CONFIG.port, () => {
@@ -444,6 +544,7 @@ app.listen(CONFIG.port, () => {
   console.log(`📡 聊天接口: http://localhost:${CONFIG.port}/api/chat`);
   console.log(`📋 模型接口: http://localhost:${CONFIG.port}/api/models`);
   console.log(`📚 知识库条目: ${knowledgeBase.length}`);
+  console.log(`🔌 本地 MCP: ${localMcp.enabled ? localMcp.url : 'disabled'}`);
 });
 
 // 退出时关闭无头浏览器
