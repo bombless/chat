@@ -618,23 +618,12 @@
             border-radius: 8px;
             font-size: 11px;
             cursor: pointer;
-            flex-shrink: 0;
-        }
-
-        .kb-item .kb-del:hover {
-            background: #8a3a4a;
         }
 
         .kb-status {
-            font-size: 12px;
             color: #6a8aaa;
-        }
-
-        .kb-empty {
-            font-size: 12px;
-            color: #5a6a7a;
-            text-align: center;
-            padding: 8px;
+            font-size: 11px;
+            font-weight: normal;
         }
 
         /* ========== 空状态 ========== */
@@ -644,8 +633,8 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            color: #4a5a6a;
-            user-select: none;
+            color: #5a6a7a;
+            text-align: center;
         }
 
         .empty-state .icon {
@@ -786,9 +775,6 @@
 
     <!-- ====== 配置 ====== -->
     <script>
-        // ============================================================
-        //  配置 - 请在这里修改你的 API 信息
-        // ============================================================
         const CHAT_URL = '/api/chat'
         const MODELS_URL = '/api/models'
         const CONFIG = {
@@ -796,7 +782,6 @@
             systemPrompt: 'You are a helpful assistant. 当用户的问题涉及已抓取保存的网页内容时，请使用 search_knowledge 工具在知识库中检索。调用该工具前，请先从用户问题中提炼出最能代表主题的关键词（如型号、产品名、专有名词，多个关键词用空格分隔），不要把整句自然语言问句直接作为检索词。例如查询「191步枪和171冲锋枪分别多重」时应传入「191 171」或「191步枪 171冲锋枪」。如果需要了解一个尚未保存的网页，请使用 fetch_webpage 工具抓取它。回答时请基于知识库返回的真实内容，并注明信息来源网址。',
         };
 
-        // 供模型调用的工具定义
         const CHAT_TOOLS = [
             {
                 type: 'function',
@@ -828,9 +813,6 @@
             }
         ];
 
-        // ============================================================
-        //  核心 Chat 类（从 chat.js 移植，适配浏览器）
-        // ============================================================
         class Chat {
             constructor(opts) {
                 this.url = opts.url;
@@ -840,976 +822,143 @@
                 this.extraHeaders = opts.headers || {};
                 this.messages = [];
                 this.tools = opts.tools;
-
-                if (opts.system) {
-                    this.messages.push({ role: 'system', content: opts.system });
-                }
+                if (opts.system) this.messages.push({ role: 'system', content: opts.system });
             }
-
-            reset() {
-                this.messages = this.messages.filter(m => m.role === 'system');
-            }
-
+            reset() { this.messages = this.messages.filter(m => m.role === 'system'); }
             async models(name) {
                 const url = this.modelsUrl + '?capabilities=TG&page_size=99&name=' + encodeURIComponent(name || '');
-                const resp = await fetch(url, {
-                    headers: {
-                        'Content-Type': 'application/json',
-                        ...this.extraHeaders
-                    }
-                });
+                const resp = await fetch(url, { headers: { 'Content-Type': 'application/json', ...this.extraHeaders } });
                 return resp.json();
             }
-
             async *request(signal) {
                 const systemMsgs = this.messages.filter(m => m.role === 'system');
                 const turnMsgs = this.messages.filter(m => m.role !== 'system');
                 const trimmed = turnMsgs.slice(-this.maxHistory * 2);
                 const reqMessages = [...systemMsgs, ...trimmed];
-
-                reqMessages.forEach(console.log)
-
                 const resp = await fetch(this.url, {
-                    method: 'POST',
-                    signal,
-                    headers: {
-                        'Content-Type': 'application/json',
-                        ...this.extraHeaders
-                    },
-                    body: JSON.stringify({
-                        tools: this.tools || [],
-                        model: this.model,
-                        messages: reqMessages,
-                        stream: true
-                    })
+                    method: 'POST', signal,
+                    headers: { 'Content-Type': 'application/json', ...this.extraHeaders },
+                    body: JSON.stringify({ tools: this.tools || [], model: this.model, messages: reqMessages, stream: true })
                 });
-
                 if (!resp.ok || !resp.body) {
                     const text = await resp.text().catch(() => '');
                     let error;
-                    try {
-                        const json = JSON.parse(text);
-                        if (json?.error?.code === 'insufficient_quota') {
-                            error = 'insufficient_quota';
-                        }
-                    } catch {}
+                    try { if (JSON.parse(text)?.error?.code === 'insufficient_quota') error = 'insufficient_quota'; } catch {}
                     if (error) throw error;
                     throw new Error(`请求失败 ${resp.status}: ${text}`);
                 }
-
                 const reader = resp.body.getReader();
                 const decoder = new TextDecoder();
-                let buf = '';
-                let assistantText = '';
-                const toolCallsAcc = {};
-
+                let buffer = '';
+                let content = '';
+                let toolCalls = {};
                 while (true) {
                     const { value, done } = await reader.read();
                     if (done) break;
-                    buf += decoder.decode(value, { stream: true });
-
+                    buffer += decoder.decode(value, { stream: true });
                     let nl;
-                    while ((nl = buf.indexOf('\n')) >= 0) {
-                        const line = buf.slice(0, nl).trim();
-                        buf = buf.slice(nl + 1);
-
+                    while ((nl = buffer.indexOf('\n')) >= 0) {
+                        const line = buffer.slice(0, nl).trim();
+                        buffer = buffer.slice(nl + 1);
                         if (!line.startsWith('data:')) continue;
                         const data = line.slice(5).trim();
-                        if (data === '[DONE]') break;
-
+                        if (!data || data === '[DONE]') continue;
                         try {
                             const json = JSON.parse(data);
-                            const choice = json?.choices?.[0];
-                            const delta = choice?.delta;
-
-                            if (delta?.tool_calls) {
-                                for (const tc of delta.tool_calls) {
-                                    const idx = tc.index ?? 0;
-                                    if (!toolCallsAcc[idx]) {
-                                        toolCallsAcc[idx] = {
-                                            id: '',
-                                            type: 'function',
-                                            function: { name: '', arguments: '' }
-                                        };
-                                    }
-                                    if (tc.id) toolCallsAcc[idx].id = tc.id;
-                                    if (tc.type) toolCallsAcc[idx].type = tc.type;
-                                    if (tc.function?.name) {
-                                        toolCallsAcc[idx].function.name += tc.function.name;
-                                    }
-                                    if (tc.function?.arguments) {
-                                        toolCallsAcc[idx].function.arguments += tc.function.arguments;
-                                    }
-                                }
+                            const delta = json?.choices?.[0]?.delta || {};
+                            if (delta.content) { content += delta.content; yield ['t', delta.content]; }
+                            for (const tc of delta.tool_calls || []) {
+                                const idx = tc.index ?? 0;
+                                if (!toolCalls[idx]) toolCalls[idx] = { id: '', name: '', arguments: '' };
+                                if (tc.id) toolCalls[idx].id = tc.id;
+                                if (tc.function?.name) toolCalls[idx].name += tc.function.name;
+                                if (tc.function?.arguments) toolCalls[idx].arguments += tc.function.arguments;
                             }
-
-                            if (choice?.finish_reason === 'tool_calls') {
-                                const calls = [];
-                                for (const tc of Object.values(toolCallsAcc)) {
-                                    const call = {
-                                        id: tc.id,
-                                        name: tc.function.name,
-                                        arguments: JSON.parse(tc.function.arguments),
-                                    };
-                                    calls.push(call);
-                                    yield 'o' + JSON.stringify(call);
-                                }
-                                this.messages.push({
-                                    role: 'assistant',
-                                    tool_calls: calls.map(x => ({
-                                        id: x.id,
-                                        type: 'function',
-                                        function: { name: x.name, arguments: JSON.stringify(x.arguments) }
-                                    }))
-                                });
-                                return;
+                            if (json?.choices?.[0]?.finish_reason === 'tool_calls') {
+                                const calls = Object.values(toolCalls).map(tc => ({ id: tc.id, name: tc.name, arguments: JSON.parse(tc.arguments || '{}') }));
+                                if (calls.length) yield ['o', JSON.stringify(calls[0])];
+                                if (calls.length) this.messages.push({ role: 'assistant', content: content || null, tool_calls: calls.map(tc => ({ id: tc.id, type: 'function', function: { name: tc.name, arguments: JSON.stringify(tc.arguments) } })) });
                             }
-
-                            const content = delta?.content;
-                            if (content) {
-                                assistantText += content;
-                                yield 't' + content;
-                            }
-                        } catch (e) {
-                            // 忽略不完整行
-                        }
+                        } catch (e) { console.debug('解析流式响应失败:', e.message); }
                     }
                 }
-
-                this.messages.push({ role: 'assistant', content: assistantText });
-            }
-
-            async *ask(prompt, signal) {
-                this.messages.push({ role: 'user', content: prompt });
-                for await (const chunk of this.request(signal)) {
-                    yield chunk;
-                }
-            }
-
-            async *reportCalls(calls, signal) {
-                calls.forEach(c => {
-                    this.messages.push({
-                        role: 'tool',
-                        tool_call_id: c.id,
-                        content: c.content
-                    });
-                });
-                for await (const chunk of this.request(signal)) {
-                    yield chunk;
+                if (content) {
+                    const last = this.messages[this.messages.length - 1];
+                    if (!last || last.role !== 'assistant') this.messages.push({ role: 'assistant', content });
+                    else if (!last.tool_calls) last.content = content;
                 }
             }
         }
 
-        // ============================================================
-        //  UI 控制
-        // ============================================================
         const dom = {
-            messages: document.getElementById('messages'),
-            input: document.getElementById('inputBox'),
-            sendBtn: document.getElementById('sendBtn'),
-            modelSelect: document.getElementById('modelSelect'),
-            statusDot: document.getElementById('statusDot'),
-            statusText: document.getElementById('statusText'),
-            charCount: document.getElementById('charCount'),
-            btnModels: document.getElementById('btnModels'),
-            btnReset: document.getElementById('btnReset'),
-            btnClear: document.getElementById('btnClear'),
-            btnKb: document.getElementById('btnKb'),
-            kbPanel: document.getElementById('kbPanel'),
-            kbUrlInput: document.getElementById('kbUrlInput'),
-            kbFetchBtn: document.getElementById('kbFetchBtn'),
-            kbList: document.getElementById('kbList'),
-            kbStatus: document.getElementById('kbStatus'),
+            messages: document.getElementById('messages'), input: document.getElementById('inputBox'), sendBtn: document.getElementById('sendBtn'),
+            modelSelect: document.getElementById('modelSelect'), statusDot: document.getElementById('statusDot'), statusText: document.getElementById('statusText'),
+            charCount: document.getElementById('charCount'), btnModels: document.getElementById('btnModels'), btnReset: document.getElementById('btnReset'),
+            btnClear: document.getElementById('btnClear'), btnKb: document.getElementById('btnKb'), kbPanel: document.getElementById('kbPanel'),
+            kbUrlInput: document.getElementById('kbUrlInput'), kbFetchBtn: document.getElementById('kbFetchBtn'), kbList: document.getElementById('kbList'), kbStatus: document.getElementById('kbStatus'),
         };
-
         let chat = null;
-        let currentModel = CONFIG.defaultModel;
-        let availableModels = [];
+        let currentModel = 'gpt-3.5-turbo';
         let isProcessing = false;
         let abortController = null;
-        let streamingMessage = null; // 当前正在流式输出的消息元素
+        let streamingMessage = null;
 
-        // ========== 状态管理 ==========
-        function setStatus(text, type = 'idle') {
-            dom.statusText.textContent = text;
-            dom.statusDot.className = 'dot';
-            if (type === 'active') dom.statusDot.classList.add('active');
-            if (type === 'error') dom.statusDot.classList.add('error');
-        }
-
+        function setStatus(text, type = 'idle') { dom.statusText.textContent = text; dom.statusDot.className = 'dot'; if (type === 'active') dom.statusDot.classList.add('active'); if (type === 'error') dom.statusDot.classList.add('error'); }
         function addMessage(role, content, extra = {}) {
-            // 移除空状态
-            const empty = dom.messages.querySelector('.empty-state');
-            if (empty) empty.remove();
-
-            const msg = document.createElement('div');
-            msg.className = `msg ${role}`;
-
-            if (role === 'system' || role === 'error') {
-                msg.textContent = content;
-            } else {
-                // 处理内容中的换行
-                const textDiv = document.createElement('div');
-                textDiv.textContent = content;
-                msg.appendChild(textDiv);
-
-                // 时间戳
-                const time = document.createElement('span');
-                time.className = 'time';
-                time.textContent = new Date().toLocaleTimeString();
-                msg.appendChild(time);
-
-                // Tool call 信息
-                if (extra.toolCall) {
-                    const tc = document.createElement('div');
-                    tc.className = 'tool-call';
-                    tc.textContent = '🔧 ' + extra.toolCall;
-                    msg.appendChild(tc);
-                }
-            }
-
-            dom.messages.appendChild(msg);
-            dom.messages.scrollTop = dom.messages.scrollHeight;
-            return msg;
+            const empty = dom.messages.querySelector('.empty-state'); if (empty) empty.remove();
+            const msg = document.createElement('div'); msg.className = `msg ${role}`;
+            if (role === 'system' || role === 'error') msg.textContent = content;
+            else { const textDiv = document.createElement('div'); textDiv.textContent = content; msg.appendChild(textDiv); const time = document.createElement('span'); time.className = 'time'; time.textContent = new Date().toLocaleTimeString(); msg.appendChild(time); if (extra.toolCall) { const tc = document.createElement('div'); tc.className = 'tool-call'; tc.textContent = '🔧 ' + extra.toolCall; msg.appendChild(tc); } }
+            dom.messages.appendChild(msg); dom.messages.scrollTop = dom.messages.scrollHeight; return msg;
         }
-
-        function updateStreamingMessage(content) {
-            if (!streamingMessage) {
-                streamingMessage = addMessage('assistant', content);
-                return streamingMessage;
-            }
-            // 更新已有消息
-            const textDiv = streamingMessage.querySelector('div:first-child');
-            if (textDiv) {
-                textDiv.textContent = content;
-            } else {
-                streamingMessage.textContent = content;
-            }
-            dom.messages.scrollTop = dom.messages.scrollHeight;
-            return streamingMessage;
-        }
-
-        function finishStreaming() {
-            streamingMessage = null;
-        }
-
-        function clearMessages() {
-            dom.messages.innerHTML = `
-                <div class="empty-state">
-                    <div class="icon">💬</div>
-                    <h3>开始对话吧</h3>
-                    <p style="color:#4a5a6a;font-size:13px;margin-top:4px;">支持多轮对话，自动记忆上下文</p>
-                </div>
-            `;
-            streamingMessage = null;
-        }
-
-        // ========== 修改 / 修订 ==========
-        function mkBtn(label, onClick, extraClass = '') {
-            const b = document.createElement('button');
-            b.className = 'btn btn-small ' + extraClass;
-            b.textContent = label;
-            b.addEventListener('click', onClick);
-            return b;
-        }
-
-        // 仅更新消息正文文本（保留时间、操作按钮等子元素）
-        function updateMessageText(msgEl, text) {
-            let div = msgEl.querySelector('div:first-child');
-            if (!div) {
-                div = document.createElement('div');
-                msgEl.insertBefore(div, msgEl.firstChild);
-            }
-            div.textContent = text;
-            dom.messages.scrollTop = dom.messages.scrollHeight;
-        }
-
-        // 给一条 assistant 消息附加「修改」按钮
-        function attachModify(msgEl, msgObj) {
-            if (msgEl._modifyAttached) return;
-            msgEl._modifyAttached = true;
-            msgEl._msgObj = msgObj;
-
-            const actions = document.createElement('div');
-            actions.className = 'msg-actions';
-            actions.appendChild(mkBtn('✏️ 修改', () => startEdit(msgEl, msgObj, actions)));
-            msgEl.appendChild(actions);
-        }
-
-        // 进入编辑态：展示意见输入框
-        function startEdit(msgEl, msgObj, actions) {
-            if (isProcessing) return;
-            if (msgEl._origContent === undefined) msgEl._origContent = msgObj.content;
-
-            actions.style.display = 'none';
-            if (msgEl._editBox) msgEl._editBox.remove();
-
-            const editBox = document.createElement('div');
-            editBox.className = 'msg-edit';
-            editBox.innerHTML = `
-                <textarea class="edit-input" placeholder="输入修改意见，例如：把语气改得更正式一些 / 再补充两点 / 精简到三句话"></textarea>
-                <div class="edit-btns">
-                    <button class="btn btn-small btn-submit">提交修改</button>
-                    <button class="btn btn-small btn-cancel">取消</button>
-                </div>`;
-            msgEl.appendChild(editBox);
-            msgEl._editBox = editBox;
-
-            const ta = editBox.querySelector('.edit-input');
-            ta.focus();
-            editBox.querySelector('.btn-submit').addEventListener('click', () => {
-                const instr = ta.value.trim();
-                if (!instr) return;
-                doRevision(msgEl, msgObj, instr, actions);
-            });
-            editBox.querySelector('.btn-cancel').addEventListener('click', () => {
-                cancelEdit(msgEl, msgObj, actions);
-            });
-        }
-
-        // 调用修订接口，按意见重新生成该条回复
+        function updateStreamingMessage(content) { if (!streamingMessage) { streamingMessage = addMessage('assistant', content); return streamingMessage; } const textDiv = streamingMessage.querySelector('div:first-child'); if (textDiv) textDiv.textContent = content; else streamingMessage.textContent = content; dom.messages.scrollTop = dom.messages.scrollHeight; return streamingMessage; }
+        function finishStreaming() { streamingMessage = null; }
+        function clearMessages() { dom.messages.innerHTML = '<div class="empty-state"><div class="icon">💬</div><h3>开始对话吧</h3><p style="color:#4a5a6a;font-size:13px;margin-top:4px;">支持多轮对话，自动记忆上下文</p></div>'; }
+        function attachModify(msgEl, msgObj) { if (!msgEl || !msgObj) return; if (msgEl.querySelector('.msg-actions')) return; const actions = document.createElement('div'); actions.className = 'msg-actions'; const btn = document.createElement('button'); btn.className = 'btn-small'; btn.textContent = '✏️ 修改'; actions.appendChild(btn); msgEl.appendChild(actions); btn.onclick = () => showEdit(msgEl, msgObj, actions); }
+        function updateMessageText(msgEl, content) { const textDiv = msgEl.querySelector('div:first-child'); if (textDiv) textDiv.textContent = content; }
+        function showEdit(msgEl, msgObj, actions) { if (msgEl._editBox) return; const box = document.createElement('div'); box.className = 'msg-edit'; box.innerHTML = '<textarea class="edit-input" placeholder="请输入修改意见"></textarea><div class="edit-btns"><button class="btn-submit">提交</button><button class="btn-cancel">取消</button></div>'; msgEl.appendChild(box); msgEl._editBox = box; box.querySelector('.btn-submit').onclick = () => { const instr = box.querySelector('textarea').value.trim(); if (instr) doRevision(msgEl, msgObj, instr); }; box.querySelector('.btn-cancel').onclick = () => { box.remove(); msgEl._editBox = null; }; }
         async function doRevision(msgEl, msgObj, instruction) {
-            if (isProcessing) return;
-            isProcessing = true;
-            setStatus('修改中...', 'active');
-            abortController = new AbortController();
-
-            // 视觉提示：禁用输入框/按钮 + 显示「修改中」指示
-            msgEl.classList.add('modifying');
-            const editBox = msgEl._editBox;
-            if (editBox) {
-                editBox.querySelectorAll('textarea, button').forEach((el) => (el.disabled = true));
-            }
-            let statusEl = msgEl.querySelector('.edit-status');
-            if (!statusEl) {
-                statusEl = document.createElement('div');
-                statusEl.className = 'edit-status';
-                statusEl.innerHTML = '<span class="dot"></span><span class="txt">模型正在按意见修改…</span>';
-                msgEl.appendChild(statusEl);
-            }
-
-            const idx = chat.messages.indexOf(msgObj);
-            const prefix = chat.messages.slice(0, idx);
-            const reviseMessages = [
-                ...prefix,
-                { role: 'assistant', content: msgObj.content },
-                {
-                    role: 'user',
-                    content:
-                        '请根据以下修改意见，重新撰写你上一条（assistant 角色）的回复。' +
-                        '只输出修改后的回复正文，不要重复用户的问题，也不要添加额外解释。\n\n' +
-                        '修改意见：' + instruction,
-                },
-            ];
-
+            if (isProcessing) return; isProcessing = true; setStatus('修改中...', 'active'); abortController = new AbortController(); msgEl.classList.add('modifying');
             let newContent = '';
             try {
-                const resp = await fetch('/api/revise', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        messages: reviseMessages,
-                        model: currentModel,
-                        tools: CHAT_TOOLS,
-                    }),
-                });
-                if (!resp.ok || !resp.body) {
-                    const t = await resp.text().catch(() => '');
-                    throw new Error('修订请求失败 ' + resp.status + ' ' + t);
-                }
-
-                const reader = resp.body.getReader();
-                const decoder = new TextDecoder();
-                let buf = '';
-                while (true) {
-                    const { value, done } = await reader.read();
-                    if (done) break;
-                    buf += decoder.decode(value, { stream: true });
-                    let nl;
-                    while ((nl = buf.indexOf('\n')) >= 0) {
-                        const line = buf.slice(0, nl).trim();
-                        buf = buf.slice(nl + 1);
-                        if (!line.startsWith('data:')) continue;
-                        const data = line.slice(5).trim();
-                        if (data === '[DONE]') break;
-                        try {
-                            const json = JSON.parse(data);
-                            const c = json?.choices?.[0]?.delta?.content;
-                            if (c) {
-                                newContent += c;
-                                updateMessageText(msgEl, newContent);
-                            }
-                        } catch {}
-                    }
-                }
-
-                // 实时把修订结果写回该消息对象（确定时即生效）
-                msgObj.content = newContent;
-                msgEl.classList.remove('modifying');
-                if (statusEl) statusEl.remove();
-                finishEditUI(msgEl);
-            } catch (err) {
-                msgEl.classList.remove('modifying');
-                if (statusEl) statusEl.remove();
-                // 出错时恢复编辑框可操作性，允许重试
-                if (editBox) {
-                    editBox.querySelectorAll('textarea, button').forEach((el) => (el.disabled = false));
-                }
-                addMessage('error', '❌ 修改失败: ' + (err.message || err));
-            } finally {
-                isProcessing = false;
-                setStatus('就绪', 'idle');
-                abortController = null;
-            }
+                const resp = await fetch('/api/revise', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: [...chat.messages.slice(0, chat.messages.indexOf(msgObj)), { role: 'assistant', content: msgObj.content }, { role: 'user', content: '请根据以下修改意见，重新撰写你上一条（assistant 角色）的回复。只输出修改后的回复正文，不要重复用户的问题，也不要添加额外解释。\n\n修改意见：' + instruction }], model: currentModel, tools: CHAT_TOOLS }) });
+                if (!resp.ok || !resp.body) throw new Error('修订请求失败 ' + resp.status);
+                const reader = resp.body.getReader(); const decoder = new TextDecoder(); let buf = '';
+                while (true) { const { value, done } = await reader.read(); if (done) break; buf += decoder.decode(value, { stream: true }); let nl; while ((nl = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1); if (!line.startsWith('data:')) continue; const data = line.slice(5).trim(); if (!data || data === '[DONE]') continue; try { const json = JSON.parse(data); const c = json?.choices?.[0]?.delta?.content; if (c) { newContent += c; updateMessageText(msgEl, newContent); } } catch {} } }
+                msgObj.content = newContent; const editBox = msgEl._editBox; if (editBox) { editBox.remove(); msgEl._editBox = null; } msgEl.classList.remove('modifying'); setStatus('就绪', 'idle');
+            } catch (e) { msgEl.classList.remove('modifying'); setStatus('就绪', 'idle'); addMessage('error', '❌ ' + e.message); }
+            finally { isProcessing = false; }
         }
-
-        // 修订完成：替换为「继续修改 / 确定 / 取消」
-        function finishEditUI(msgEl) {
-            if (msgEl._editBox) {
-                msgEl._editBox.remove();
-                msgEl._editBox = null;
-            }
-            const actions = msgEl.querySelector('.msg-actions');
-            actions.style.display = 'flex';
-            actions.innerHTML = '';
-            actions.appendChild(mkBtn('↻ 继续修改', () => startEdit(msgEl, msgEl._msgObj, actions)));
-            actions.appendChild(mkBtn('✅ 确定', () => showConfirmChoice(msgEl)));
-            actions.appendChild(mkBtn('✖ 取消', () => cancelEdit(msgEl, msgEl._msgObj, actions)));
-        }
-
-        // 确定时让用户选择：保留 / 移除该回复之后的内容
-        // 若该回复之后已无后续会话，则无需区分，直接确定即可
-        function showConfirmChoice(msgEl) {
-            const msgObj = msgEl._msgObj;
-            const idx = chat.messages.indexOf(msgObj);
-            if (idx < 0 || idx === chat.messages.length - 1) {
-                confirmEdit(msgEl, false);
-                return;
-            }
-            const actions = msgEl.querySelector('.msg-actions');
-            actions.innerHTML = '';
-            actions.appendChild(mkBtn('保留后续对话', () => confirmEdit(msgEl, false)));
-            actions.appendChild(mkBtn('移除后续对话', () => confirmEdit(msgEl, true)));
-            actions.appendChild(mkBtn('↩ 返回', () => finishEditUI(msgEl)));
-        }
-
-        // 取消：恢复原始内容，回到单一「修改」按钮
-        function cancelEdit(msgEl, msgObj, actions) {
-            if (msgEl._editBox) {
-                msgEl._editBox.remove();
-                msgEl._editBox = null;
-            }
-            msgObj.content = msgEl._origContent;
-            updateMessageText(msgEl, msgObj.content);
-            resetToModifyButton(msgEl, actions);
-            addMessage('system', '↩️ 已取消修改，保留原始回复');
-        }
-
-        // 确定：落定修订内容到对话历史。
-        //   removeLater=true  -> 截断到该 assistant 消息之后，并移除界面上的后续旧气泡
-        //   removeLater=false -> 仅更新该条内容，保留其后所有对话（内容可能基于旧回复，仅供参考）
-        function confirmEdit(msgEl, removeLater) {
-            const msgObj = msgEl._msgObj;
-            const idx = chat.messages.indexOf(msgObj);
-            if (idx >= 0) {
-                if (removeLater) {
-                    chat.messages.length = idx + 1;
-                }
-                // 无论是否移除，msgObj.content 已在修订时实时更新，历史中该条内容已是新版本
-            }
-            msgEl._origContent = msgObj.content;
-            const actions = msgEl.querySelector('.msg-actions');
-            resetToModifyButton(msgEl, actions);
-
-            if (removeLater) {
-                // 同步移除该消息之后、界面上仍显示的旧气泡
-                let node = msgEl.nextElementSibling;
-                while (node) {
-                    const next = node.nextElementSibling;
-                    node.remove();
-                    node = next;
-                }
-                addMessage('system', '✅ 已更新对话历史（该回复之后的旧内容已移除，可继续对话）');
-            } else if (idx >= 0 && idx < chat.messages.length - 1) {
-                addMessage('system', '✅ 已更新该条回复，后续对话已保留（其内容仍基于旧回复，仅供参考）');
-            } else {
-                addMessage('system', '✅ 已更新对话历史');
-            }
-        }
-
-        function resetToModifyButton(msgEl, actions) {
-            if (!actions) actions = msgEl.querySelector('.msg-actions');
-            actions.style.display = 'flex';
-            actions.innerHTML = '';
-            actions.appendChild(mkBtn('✏️ 修改', () => startEdit(msgEl, msgEl._msgObj, actions)));
-        }
-
-        // ========== 模型管理 ==========
-        async function loadModels() {
-            try {
-                setStatus('加载模型...', 'active');
-                const temp = new Chat({
-                    url: CHAT_URL,
-                    modelsUrl: MODELS_URL,
-                    model: currentModel,
-                });
-                const result = await temp.models('');
-                availableModels = result.data || [];
-
-                dom.modelSelect.innerHTML = '';
-                if (availableModels.length === 0) {
-                    const opt = document.createElement('option');
-                    opt.value = '';
-                    opt.textContent = '无可用模型';
-                    dom.modelSelect.appendChild(opt);
-                    return;
-                }
-
-                availableModels.forEach(m => {
-                    const opt = document.createElement('option');
-                    opt.value = m.id;
-                    opt.textContent = m.id;
-                    if (m.id === currentModel) opt.selected = true;
-                    dom.modelSelect.appendChild(opt);
-                });
-
-                setStatus(`就绪 (${availableModels.length} 个模型)`, 'idle');
-            } catch (err) {
-                setStatus('加载模型失败', 'error');
-                dom.modelSelect.innerHTML = `<option value="">加载失败</option>`;
-                console.error('加载模型失败:', err);
-            }
-        }
-
-        function switchModel(model) {
-            if (!model) return;
-            currentModel = model;
-            chat = new Chat({
-                url: CHAT_URL,
-                modelsUrl: MODELS_URL,
-                model: currentModel,
-                maxHistory: CONFIG.maxHistory,
-                system: CONFIG.systemPrompt,
-                tools: CHAT_TOOLS,
-            });
-            // 同步下拉框
-            dom.modelSelect.value = model;
-            setStatus(`模型: ${model}`, 'idle');
-        }
-
-        // ========== 工具执行 ==========
+        async function loadKB() { try { const data = await (await fetch('/api/kb')).json(); dom.kbStatus.textContent = `${data.count} 条`; dom.kbList.innerHTML = data.items.map(item => `<div class="kb-item"><div class="kb-item-head"><div><div class="kb-title">${item.title || item.url}</div><div class="kb-url">${item.url}</div></div><button class="kb-del" data-id="${item.id}">删除</button></div><div class="kb-summary">${item.summary || ''}</div></div>`).join(''); dom.kbList.querySelectorAll('.kb-del').forEach(btn => btn.onclick = async () => { await fetch('/api/kb/' + encodeURIComponent(btn.dataset.id), { method: 'DELETE' }); loadKB(); }); } catch (e) { console.error('加载知识库失败:', e); } }
+        async function fetchKB() { const url = dom.kbUrlInput.value.trim(); if (!url) return; dom.kbFetchBtn.disabled = true; dom.kbStatus.textContent = '抓取中...'; try { const resp = await fetch('/api/fetch-url', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) }); const data = await resp.json(); if (!resp.ok) throw new Error(data.error || resp.status); dom.kbUrlInput.value = ''; await loadKB(); dom.kbStatus.textContent = '已加入'; } catch (e) { dom.kbStatus.textContent = '失败: ' + e.message; } finally { dom.kbFetchBtn.disabled = false; } }
+        async function loadModels() { try { const data = await (await fetch(MODELS_URL)).json(); const models = data.data || []; dom.modelSelect.innerHTML = models.map(m => `<option value="${m.id}">${m.id}</option>`).join(''); if (models.length) { currentModel = models[0].id; switchModel(currentModel); } } catch (e) { console.error('加载模型失败:', e); } }
+        function switchModel(model) { if (!model) return; currentModel = model; chat = new Chat({ url: CHAT_URL, modelsUrl: MODELS_URL, model: currentModel, maxHistory: CONFIG.maxHistory, system: CONFIG.systemPrompt, tools: CHAT_TOOLS }); dom.modelSelect.value = model; setStatus(`模型: ${model}`, 'idle'); }
         async function executeTool(call) {
             try {
-                if (call.name === 'search_knowledge') {
-                    const q = call.arguments?.query || '';
-                    const resp = await fetch('/api/kb-search', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ query: q }),
-                    });
-                    const data = await resp.json();
-                    if (data.results && data.results.length) {
-                        return JSON.stringify(data.results, null, 2);
-                    }
-                    return '知识库中未找到与「' + q + '」相关的内容。';
-                } else if (call.name === 'fetch_webpage') {
-                    const url = call.arguments?.url || '';
-                    const resp = await fetch('/api/fetch-url', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ url }),
-                    });
-                    const data = await resp.json();
-                    if (!resp.ok) {
-                        return '抓取网页失败: ' + (data.error || resp.status);
-                    }
-                    // 同步刷新知识库列表
-                    loadKB();
-                    return '已抓取并保存到知识库。\n标题: ' + data.title +
-                        '\n网址: ' + data.url +
-                        '\n内容长度: ' + data.length + ' 字符\n\n摘要:\n' + data.summary;
-                }
+                if (call.name === 'search_knowledge') { const q = call.arguments?.query || ''; const resp = await fetch('/api/kb-search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: q }) }); const data = await resp.json(); return data.results?.length ? JSON.stringify(data.results, null, 2) : '知识库中未找到与「' + q + '」相关的内容。'; }
+                if (call.name === 'fetch_webpage') { const url = call.arguments?.url || ''; const resp = await fetch('/api/fetch-url', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) }); const data = await resp.json(); if (!resp.ok) return '抓取网页失败: ' + (data.error || resp.status); loadKB(); return '已抓取并保存到知识库。\n标题: ' + data.title + '\n网址: ' + data.url + '\n内容长度: ' + data.length + ' 字符\n\n摘要:\n' + data.summary; }
                 return '未知工具: ' + call.name;
-            } catch (e) {
-                return '工具执行出错: ' + e.message;
-            }
+            } catch (e) { return '工具执行出错: ' + e.message; }
         }
-
-        // ========== 发送消息 ==========
         async function sendMessage() {
-            const text = dom.input.value.trim();
-            if (!text || isProcessing) return;
-
-            // 初始化 chat（如果还没有）
-            if (!chat) {
-                chat = new Chat({
-                    url: CHAT_URL,
-                    modelsUrl: MODELS_URL,
-                    model: currentModel,
-                    maxHistory: CONFIG.maxHistory,
-                    system: CONFIG.systemPrompt,
-                    tools: CHAT_TOOLS,
-                });
-            }
-
-            // 显示用户消息
-            addMessage('user', text);
-
-            // 清空输入
-            dom.input.value = '';
-            dom.charCount.textContent = '0';
-            dom.input.style.height = 'auto';
-
-            isProcessing = true;
-            dom.sendBtn.disabled = true;
-            dom.sendBtn.innerHTML = '<span class="icon">⏳</span> 发送中...';
-            setStatus('思考中...', 'active');
-
-            abortController = new AbortController();
-            let fullContent = '';
-            let hasContent = false;
-            let toolRound = 0;
-
+            const text = dom.input.value.trim(); if (!text || isProcessing) return;
+            if (!chat) chat = new Chat({ url: CHAT_URL, modelsUrl: MODELS_URL, model: currentModel, maxHistory: CONFIG.maxHistory, system: CONFIG.systemPrompt, tools: CHAT_TOOLS });
+            addMessage('user', text); dom.input.value = ''; dom.charCount.textContent = '0'; dom.input.style.height = 'auto'; isProcessing = true; dom.sendBtn.disabled = true; dom.sendBtn.innerHTML = '<span class="icon">⏳</span> 发送中...'; setStatus('思考中...', 'active'); abortController = new AbortController(); let fullContent = ''; let hasContent = false; let toolRound = 0;
             try {
-                // 把用户消息加入对话并发起第一轮请求
                 chat.messages.push({ role: 'user', content: text });
-
                 while (true) {
                     let toolCalls = [];
-
-                    for await (const chunk of chat.request(abortController.signal)) {
-                        const type = chunk[0];
-                        const content = chunk.slice(1);
-
-                        if (type === 't') {
-                            hasContent = true;
-                            fullContent += content;
-                            updateStreamingMessage(fullContent);
-                        } else if (type === 'o') {
-                            // tool call
-                            try {
-                                const call = JSON.parse(content);
-                                toolCalls.push(call);
-                                addMessage('system', `🔧 调用工具: ${call.name}`, { toolCall: JSON.stringify(call.arguments, null, 2) });
-                            } catch {
-                                addMessage('system', `🔧 ${content}`);
-                            }
-                        }
-                    }
-
-                    // 没有工具调用 -> 本轮回复结束
-                    if (toolCalls.length === 0) {
-                        const lastMsg = chat.messages[chat.messages.length - 1];
-                        if (lastMsg && lastMsg.role === 'assistant' && streamingMessage) {
-                            attachModify(streamingMessage, lastMsg);
-                        }
-                        break;
-                    }
-
-                    // 执行工具并回填结果
-                    toolRound++;
-                    setStatus(`执行工具 (第 ${toolRound} 轮)...`, 'active');
-                    const reports = [];
-                    for (const call of toolCalls) {
-                        const result = await executeTool(call);
-                        addMessage('system', `📨 工具结果: ${call.name}`, { toolCall: result.slice(0, 2000) });
-                        reports.push({ id: call.id, content: result });
-                    }
-
-                    // 将工具结果写入对话历史，准备下一轮请求
-                    reports.forEach((r) => {
-                        chat.messages.push({
-                            role: 'tool',
-                            tool_call_id: r.id,
-                            content: r.content,
-                        });
-                    });
-
-                    // 重置流式输出，准备下一轮
-                    finishStreaming();
-                    fullContent = '';
-                    hasContent = false;
+                    for await (const chunk of chat.request(abortController.signal)) { if (chunk[0] === 't') { hasContent = true; fullContent += chunk[1]; updateStreamingMessage(fullContent); } else if (chunk[0] === 'o') { try { const call = JSON.parse(chunk[1]); toolCalls.push(call); addMessage('system', `🔧 调用工具: ${call.name}`); } catch {} } }
+                    if (!toolCalls.length) { const lastMsg = chat.messages[chat.messages.length - 1]; if (lastMsg?.role === 'assistant' && streamingMessage) attachModify(streamingMessage, lastMsg); break; }
+                    toolRound++; setStatus(`执行工具 (第 ${toolRound} 轮)...`, 'active'); const reports = []; for (const call of toolCalls) { const result = await executeTool(call); addMessage('system', `📨 工具结果: ${call.name}`, { toolCall: result.slice(0, 2000) }); reports.push({ id: call.id, content: result }); } reports.forEach(r => chat.messages.push({ role: 'tool', tool_call_id: r.id, content: r.content })); finishStreaming(); fullContent = ''; hasContent = false;
                 }
-
-                if (!hasContent) {
-                    addMessage('system', '没有收到回复内容');
-                }
-
-                finishStreaming();
-                setStatus('就绪', 'idle');
-
-            } catch (err) {
-                if (err.name === 'AbortError') {
-                    addMessage('system', '⏹️ 已取消请求');
-                } else if (err === 'insufficient_quota') {
-                    addMessage('error', '❌ 配额不足，请检查账户余额');
-                    setStatus('配额不足', 'error');
-                } else {
-                    addMessage('error', `❌ ${err.message || '请求失败'}`);
-                    setStatus('错误', 'error');
-                    console.error(err);
-                }
-                finishStreaming();
-            } finally {
-                isProcessing = false;
-                dom.sendBtn.disabled = false;
-                dom.sendBtn.innerHTML = '<span class="icon">➤</span> 发送';
-                abortController = null;
-                dom.input.focus();
-            }
+                if (!hasContent) addMessage('system', '没有收到回复内容'); finishStreaming(); setStatus('就绪', 'idle');
+            } catch (err) { if (err.name === 'AbortError') addMessage('system', '⏹️ 已取消请求'); else if (err === 'insufficient_quota') addMessage('error', '❌ 配额不足，请检查账户余额'); else { console.error('请求错误:', err); addMessage('error', '❌ ' + (err.message || err)); } finishStreaming(); setStatus('错误', 'error'); }
+            finally { isProcessing = false; dom.sendBtn.disabled = false; dom.sendBtn.innerHTML = '<span class="icon">➤</span> 发送'; }
         }
-
-        // ========== 事件绑定 ==========
-        // 发送按钮
-        dom.sendBtn.addEventListener('click', sendMessage);
-
-        // 输入框 - Enter 发送，Shift+Enter 换行
-        dom.input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-            }
-        });
-
-        // 输入框 - 自动高度 + 字数统计
-        dom.input.addEventListener('input', () => {
-            dom.input.style.height = 'auto';
-            dom.input.style.height = Math.min(dom.input.scrollHeight, 120) + 'px';
-            dom.charCount.textContent = dom.input.value.length;
-        });
-
-        // 模型切换
-        dom.modelSelect.addEventListener('change', (e) => {
-            switchModel(e.target.value);
-            // 保存到 localStorage
-            try {
-                localStorage.setItem('chat-model', e.target.value);
-            } catch {}
-        });
-
-        // 重置对话
-        dom.btnReset.addEventListener('click', () => {
-            if (chat) {
-                chat.reset();
-                addMessage('system', '🔄 对话历史已重置');
-                setStatus('已重置', 'idle');
-            }
-        });
-
-        // 清屏
-        dom.btnClear.addEventListener('click', () => {
-            clearMessages();
-            addMessage('system', '🗑️ 屏幕已清空');
-        });
-
-        // 刷新模型列表
-        dom.btnModels.addEventListener('click', loadModels);
-
-        // Ctrl+Enter 快捷键发送（备用）
-        document.addEventListener('keydown', (e) => {
-            if (e.ctrlKey && e.key === 'Enter') {
-                e.preventDefault();
-                sendMessage();
-            }
-        });
-
-        // ========== 知识库面板 ==========
-        function toggleKbPanel() {
-            dom.kbPanel.classList.toggle('open');
-            if (dom.kbPanel.classList.contains('open')) {
-                loadKB();
-                dom.kbUrlInput.focus();
-            }
-        }
-
-        async function loadKB() {
-            try {
-                const resp = await fetch('/api/kb');
-                const data = await resp.json();
-                dom.kbStatus.textContent = `(${data.count} 条)`;
-                renderKBList(data.items || []);
-            } catch (e) {
-                dom.kbStatus.textContent = '(加载失败)';
-            }
-        }
-
-        function renderKBList(items) {
-            dom.kbList.innerHTML = '';
-            if (items.length === 0) {
-                dom.kbList.innerHTML = '<div class="kb-empty">暂无抓取内容，输入网址后点击「抓取」</div>';
-                return;
-            }
-            items.slice().reverse().forEach((item) => {
-                const div = document.createElement('div');
-                div.className = 'kb-item';
-
-                const head = document.createElement('div');
-                head.className = 'kb-item-head';
-
-                const titleWrap = document.createElement('div');
-                titleWrap.style.flex = '1';
-                const title = document.createElement('div');
-                title.className = 'kb-title';
-                title.textContent = item.title || item.url;
-                const url = document.createElement('div');
-                url.className = 'kb-url';
-                url.textContent = item.url;
-                titleWrap.appendChild(title);
-                titleWrap.appendChild(url);
-
-                const del = document.createElement('button');
-                del.className = 'kb-del';
-                del.textContent = '删除';
-                del.addEventListener('click', () => deleteKB(item.id));
-
-                head.appendChild(titleWrap);
-                head.appendChild(del);
-
-                const summary = document.createElement('div');
-                summary.className = 'kb-summary';
-                summary.textContent = item.summary || '';
-
-                div.appendChild(head);
-                div.appendChild(summary);
-                dom.kbList.appendChild(div);
-            });
-        }
-
-        async function deleteKB(id) {
-            try {
-                await fetch('/api/kb/' + encodeURIComponent(id), { method: 'DELETE' });
-                loadKB();
-            } catch (e) {
-                console.error('删除失败', e);
-            }
-        }
-
-        async function fetchUrl() {
-            const url = dom.kbUrlInput.value.trim();
-            if (!url || isProcessing) return;
-
-            dom.kbFetchBtn.disabled = true;
-            dom.kbFetchBtn.textContent = '抓取中...';
-            dom.kbStatus.textContent = '(抓取中...)';
-
-            try {
-                const resp = await fetch('/api/fetch-url', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url }),
-                });
-                const data = await resp.json();
-
-                if (!resp.ok) {
-                    addMessage('error', `❌ 抓取失败: ${data.error || resp.status}`);
-                } else {
-                    addMessage('system', `📚 已抓取: ${data.title}\n${data.url}\n\n摘要:\n${data.summary}`);
-                    dom.kbUrlInput.value = '';
-                    dom.kbStatus.textContent = `(${(await (await fetch('/api/kb')).json()).count} 条)`;
-                }
-                loadKB();
-            } catch (e) {
-                addMessage('error', `❌ 抓取出错: ${e.message}`);
-            } finally {
-                dom.kbFetchBtn.disabled = false;
-                dom.kbFetchBtn.textContent = '抓取';
-            }
-        }
-
-        // 知识库按钮
-        dom.btnKb.addEventListener('click', toggleKbPanel);
-        dom.kbFetchBtn.addEventListener('click', fetchUrl);
-        dom.kbUrlInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                fetchUrl();
-            }
-        });
-
-        // ========== 初始化 ==========
-        async function init() {
-            // 检查配置
-            // 恢复上次使用的模型
-            try {
-                const saved = localStorage.getItem('chat-model');
-                if (saved) currentModel = saved;
-            } catch {}
-
-            // 初始化 chat
-            chat = new Chat({
-                url: CHAT_URL,
-                modelsUrl: MODELS_URL,
-                model: currentModel,
-                maxHistory: CONFIG.maxHistory,
-                system: CONFIG.systemPrompt,
-                tools: CHAT_TOOLS,
-            });
-
-            // 加载模型列表
-            await loadModels();
-            dom.modelSelect.value = currentModel;
-
-            // 预加载知识库计数
-            loadKB().catch(() => {});
-
-            // 显示欢迎
-            addMessage('system', `🤖 欢迎！当前模型: ${currentModel}`);
-            addMessage('system', `💡 输入消息开始对话，/help 查看命令`);
-
-            dom.input.focus();
-        }
-
-        // 简单的命令支持
-        const origSend = sendMessage;
-        sendMessage = async function() {
-            const text = dom.input.value.trim();
-            if (text.startsWith('/')) {
-                const parts = text.split(/\s+/);
-                const cmd = parts[0].toLowerCase();
-                const arg = parts.slice(1).join(' ');
-                dom.input.value = '';
-                dom.charCount.textContent = '0';
-
-                switch (cmd) {
-                    case '/help':
-                        addMessage('system', `命令: /models 刷新模型 /use 模型名 /reset 重置 /clear 清屏 /help 帮助`);
-                        break;
-                    case '/models':
-                        await loadModels();
-                        break;
-                    case '/use':
-                        if (arg) {
-                            const exists = availableModels.some(m => m.id === arg);
-                            if (exists || availableModels.length === 0) {
-                                switchModel(arg);
-                                addMessage('system', `✅ 切换到: ${arg}`);
-                            } else {
-                                addMessage('system', `❌ 模型 "${arg}" 不可用`);
-                            }
-                        } else {
-                            addMessage('system', `用法: /use 模型名`);
-                        }
-                        break;
-                    case '/reset':
-                        if (chat) { chat.reset();
-                            addMessage('system', '🔄 已重置'); }
-                        break;
-                    case '/clear':
-                        clearMessages();
-                        addMessage('system', '🗑️ 已清屏');
-                        break;
-                    default:
-                        addMessage('system', `未知命令: ${cmd}，输入 /help 查看`);
-                }
-                dom.input.focus();
-                return;
-            }
-            await origSend.call(this);
-        };
-
-        // 启动
-        init().catch(console.error);
+        dom.sendBtn.onclick = sendMessage; dom.input.addEventListener('input', () => { dom.charCount.textContent = dom.input.value.length; dom.input.style.height = 'auto'; dom.input.style.height = Math.min(dom.input.scrollHeight, 120) + 'px'; }); dom.input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }); dom.btnClear.onclick = () => { clearMessages(); if (chat) chat.reset(); }; dom.btnReset.onclick = () => { if (confirm('确定要重置当前对话吗？')) { clearMessages(); if (chat) chat.reset(); } }; dom.btnModels.onclick = loadModels; dom.btnKb.onclick = () => { dom.kbPanel.classList.toggle('open'); if (dom.kbPanel.classList.contains('open')) loadKB(); }; dom.kbFetchBtn.onclick = fetchKB; dom.kbUrlInput.addEventListener('keydown', e => { if (e.key === 'Enter') fetchKB(); }); loadModels(); loadKB();
     </script>
-
+    <script src="tools-ui.js"></script>
+    <script src="workdir-ui.js"></script>
 </body>
 </html>
