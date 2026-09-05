@@ -8,6 +8,7 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 
 const CHILD_PORT = 3000;
@@ -53,6 +54,31 @@ function saveWorkdirs(items) {
 let currentWorkdir = initialWorkdir();
 let workdirs = loadWorkdirs(currentWorkdir);
 try { saveWorkdirs(workdirs); } catch (e) { console.warn('⚠️ 保存工作目录列表失败:', e.message); }
+
+// 模型发起的“添加工作目录”不会立即执行，必须由网页用户明确批准。
+const pendingWorkdirRequests = new Map();
+
+function createWorkdirRequest(value) {
+  const workdir = validateWorkdir(value);
+  const id = crypto.randomUUID();
+  pendingWorkdirRequests.set(id, { id, path: workdir, createdAt: Date.now() });
+  return { id, path: workdir };
+}
+
+async function resolveWorkdirRequest(id, approved) {
+  const request = pendingWorkdirRequests.get(id);
+  if (!request) throw new Error('工作目录请求不存在或已处理');
+  pendingWorkdirRequests.delete(id);
+
+  if (!approved) {
+    return { id, path: request.path, approved: false, current: currentWorkdir, workdirs: workdirList() };
+  }
+
+  if (!workdirs.some((item) => item.path === request.path)) workdirs.push({ path: request.path });
+  saveWorkdirs(workdirs);
+  await switchWorkdir(request.path);
+  return { id, path: request.path, approved: true, current: currentWorkdir, workdirs: workdirList() };
+}
 
 let child = null;
 let switching = Promise.resolve();
@@ -168,6 +194,36 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { current: currentWorkdir, workdirs: workdirList() });
     }
 
+    // 模型工具调用：只创建待确认请求，不执行任何目录切换。
+    if (req.method === 'POST' && req.url === '/api/workdir-requests') {
+      let raw = '';
+      for await (const chunk of req) raw += chunk;
+      let body;
+      try { body = JSON.parse(raw || '{}'); } catch (_) { return json(res, 400, { error: '请求 JSON 格式错误' }); }
+      try {
+        const request = createWorkdirRequest(body.path);
+        return json(res, 202, { ...request, status: 'pending' });
+      } catch (e) {
+        return json(res, 400, { error: e.message || String(e) });
+      }
+    }
+
+    // 网页用户明确确认/否决模型提出的工作目录请求。
+    if (req.method === 'POST' && req.url.startsWith('/api/workdir-requests/')) {
+      const id = decodeURIComponent(req.url.slice('/api/workdir-requests/'.length));
+      let raw = '';
+      for await (const chunk of req) raw += chunk;
+      let body;
+      try { body = JSON.parse(raw || '{}'); } catch (_) { return json(res, 400, { error: '请求 JSON 格式错误' }); }
+      try {
+        const result = await resolveWorkdirRequest(id, body.approved === true);
+        return json(res, 200, { ...result, status: result.approved ? 'approved' : 'denied' });
+      } catch (e) {
+        return json(res, 409, { error: e.message || String(e) });
+      }
+    }
+
+    // 手动添加/切换仍保持原有直接操作，不经过模型审批流程。
     if (req.method === 'POST' && (req.url === '/api/workdirs' || req.url === '/api/workdir')) {
       let raw = '';
       for await (const chunk of req) raw += chunk;
