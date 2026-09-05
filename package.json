@@ -1,7 +1,8 @@
 {
   "scripts": {
     "start": "node python-sandbox-runner.js",
-    "server": "node server.js"
+    "server": "node server.js",
+    "server:dir": "node server-with-workdir.js"
   },
   "engines": {
     "node": ">=22"
