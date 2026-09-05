@@ -163,7 +163,11 @@ function proxyRequest(req, res) {
       upstream.on('end', () => {
         let html = Buffer.concat(chunks).toString('utf8');
         const script = '<script src="/__workdir_ui.js"></script>';
-        if (!html.includes('/__workdir_ui.js')) html = html.includes('</head>') ? html.replace('</head>', `${script}</head>`) : html + script;
+        if (!html.includes('/__workdir_ui.js')) {
+          if (html.includes('</body>')) html = html.replace('</body>', `${script}</body>`);
+          else if (html.includes('</head>')) html = html.replace('</head>', `${script}</head>`);
+          else html += script;
+        }
         const body = Buffer.from(html);
         const outHeaders = { ...upstream.headers, 'content-length': body.length };
         delete outHeaders['content-encoding'];
