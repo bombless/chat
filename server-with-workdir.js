@@ -100,7 +100,7 @@ function proxyRequest(req, res) {
       upstream.on('data', (chunk) => chunks.push(chunk));
       upstream.on('end', () => {
         let html = Buffer.concat(chunks).toString('utf8');
-        const scripts = '<script src="/__workdir_ui.js"></script><script src="/__tools_ui.js"></script>';
+        const scripts = '<script src="/__tools_ui.js"></script><script src="/__workdir_ui.js"></script>';
         if (!html.includes('/__workdir_ui.js')) {
           if (html.includes('</body>')) html = html.replace('</body>', `${scripts}</body>`);
           else if (html.includes('</head>')) html = html.replace('</head>', `${scripts}</head>`);
