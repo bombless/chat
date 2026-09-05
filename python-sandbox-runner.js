@@ -34,8 +34,9 @@ function readBody(req) {
 }
 
 function proxyRaw(req, res, body) {
-  const headers = { ...req.headers, host: `127.0.0.1:${process.env.CHAT_PORT || 3000}` };
-  const upstream = http.request({ hostname: '127.0.0.1', port: Number(process.env.CHAT_PORT || 3000), path: req.url, method: req.method, headers }, r => {
+  const port = Number(process.env.CHAT_PORT || 3000);
+  const headers = { ...req.headers, host: `127.0.0.1:${port}` };
+  const upstream = http.request({ hostname: '127.0.0.1', port, path: req.url, method: req.method, headers }, r => {
     res.writeHead(r.statusCode || 502, r.headers);
     r.pipe(res);
   });
@@ -194,7 +195,8 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    proxyRaw(req, res, '');
+    const body = req.method === 'GET' || req.method === 'HEAD' ? '' : await readBody(req);
+    proxyRaw(req, res, body);
   } catch (e) {
     res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ error: e.message }));
