@@ -2,6 +2,8 @@
   const STYLE_ID = '__workdir_style';
   const PANEL_ID = '__workdir_panel';
   const APPROVAL_ID = '__workdir_approval';
+  let approvalPollTimer = null;
+  let displayedRequestId = null;
 
   function esc(value) {
     return String(value ?? '').replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', "'": '&#39;' })[c]);
@@ -80,13 +82,8 @@
     document.getElementById('__workdir_save').onclick = addWorkdir;
     document.getElementById('__workdir_input').addEventListener('keydown', (e) => { if (e.key === 'Enter') addWorkdir(); });
     document.getElementById('__workdir_current').onchange = async (e) => {
-      try {
-        await api('/api/workdir', { method: 'POST', body: JSON.stringify({ path: e.target.value }) });
-        window.location.reload();
-      } catch (error) {
-        alert(error.message);
-        await loadWorkdirs();
-      }
+      try { await api('/api/workdir', { method: 'POST', body: JSON.stringify({ path: e.target.value }) }); await loadWorkdirs(); }
+      catch (error) { alert(error.message); await loadWorkdirs(); }
     };
   }
 
@@ -99,149 +96,56 @@
     const list = document.getElementById('__workdir_list');
     if (list) {
       list.innerHTML = data.workdirs.map((item) => `<div class="wd-item ${item.active ? 'active' : ''}" data-path="${esc(item.path)}"><span class="wd-path">${esc(item.path)}</span>${item.active ? '<span>当前</span>' : ''}</div>`).join('');
-      list.querySelectorAll('.wd-item').forEach((el) => el.onclick = () => {
-        document.getElementById('__workdir_current').value = el.dataset.path;
-        document.getElementById('__workdir_current').dispatchEvent(new Event('change'));
-      });
+      list.querySelectorAll('.wd-item').forEach((el) => el.onclick = () => { document.getElementById('__workdir_current').value = el.dataset.path; document.getElementById('__workdir_current').dispatchEvent(new Event('change')); });
     }
   }
 
   async function addWorkdir() {
-    const input = document.getElementById('__workdir_input');
-    const error = document.getElementById('__workdir_error');
-    const button = document.getElementById('__workdir_save');
-    const value = input.value.trim();
+    const input = document.getElementById('__workdir_input'); const error = document.getElementById('__workdir_error'); const button = document.getElementById('__workdir_save'); const value = input.value.trim();
     if (!value) { error.textContent = '请输入目录路径'; return; }
-    button.disabled = true;
-    error.textContent = '正在验证并切换工作目录…';
-    try {
-      await api('/api/workdirs', { method: 'POST', body: JSON.stringify({ path: value }) });
-      window.location.reload();
-    } catch (e) {
-      error.textContent = e.message;
-      button.disabled = false;
-    }
+    button.disabled = true; error.textContent = '正在验证并切换工作目录…';
+    try { await api('/api/workdirs', { method: 'POST', body: JSON.stringify({ path: value }) }); panelClose(); await loadWorkdirs(); }
+    catch (e) { error.textContent = e.message; button.disabled = false; }
   }
 
-  // 模型调用 add_working_directory 时弹出确认框。
-  // 返回值会作为 tool result 写回模型，因此“拒绝”也是明确的工具结果，而不是静默中断。
-  async function requestWorkingDirectoryApproval(workdir) {
-    installStyle();
-    createUI();
+  function panelClose() { const panel = document.getElementById(PANEL_ID); if (panel) panel.classList.remove('open'); const button = document.getElementById('__workdir_save'); if (button) button.disabled = false; }
 
-    let request;
-    try {
-      request = await api('/api/workdir-requests', {
-        method: 'POST',
-        body: JSON.stringify({ path: workdir }),
-      });
-    } catch (e) {
-      return { approved: false, path: workdir, error: e.message || String(e) };
-    }
-
-    const old = document.getElementById(APPROVAL_ID);
-    if (old) old.remove();
-    const modal = document.createElement('div');
-    modal.id = APPROVAL_ID;
-    modal.className = 'open';
-    modal.innerHTML = `
-      <div class="wd-approval-dialog">
-        <h3>🔐 请求添加工作目录</h3>
-        <div class="wd-approval-help">AI 请求将当前项目工作目录切换到下面的路径。只有你点击“允许”后才会真正添加并切换。</div>
-        <div class="wd-approval-path"></div>
-        <div class="wd-approval-actions">
-          <button class="wd-deny">否决</button>
-          <button class="wd-approve">允许添加</button>
-        </div>
-      </div>`;
+  function showApproval(request) {
+    if (displayedRequestId === request.id) return;
+    const old = document.getElementById(APPROVAL_ID); if (old) old.remove();
+    displayedRequestId = request.id;
+    const modal = document.createElement('div'); modal.id = APPROVAL_ID; modal.className = 'open';
+    modal.innerHTML = `<div class="wd-approval-dialog"><h3>🔐 请求添加工作目录</h3><div class="wd-approval-help">AI 请求将当前工作目录切换到下面的路径。只有你点击“允许”后才会真正添加并切换。</div><div class="wd-approval-path"></div><div class="wd-approval-actions"><button class="wd-deny">否决</button><button class="wd-approve">允许添加</button></div></div>`;
     modal.querySelector('.wd-approval-path').textContent = request.path;
     document.body.appendChild(modal);
 
-    return new Promise((resolve) => {
-      let settled = false;
-      const finish = async (approved) => {
-        if (settled) return;
-        settled = true;
-        const buttons = modal.querySelectorAll('button');
-        buttons.forEach((button) => { button.disabled = true; });
-        try {
-          const result = await api('/api/workdir-requests/' + encodeURIComponent(request.id), {
-            method: 'POST',
-            body: JSON.stringify({ approved }),
-          });
-          modal.remove();
-          if (approved) await loadWorkdirs();
-          resolve(result);
-        } catch (e) {
-          settled = false;
-          buttons.forEach((button) => { button.disabled = false; });
-          resolve({ approved: false, path: request.path, error: e.message || String(e) });
-        }
-      };
-      modal.querySelector('.wd-approve').onclick = () => finish(true);
-      modal.querySelector('.wd-deny').onclick = () => finish(false);
-      modal.addEventListener('click', (e) => {
-        if (e.target === modal) finish(false);
-      });
-    });
+    const finish = async (approved) => {
+      const buttons = modal.querySelectorAll('button'); buttons.forEach((button) => { button.disabled = true; });
+      try { const result = await api('/api/workdir-requests/' + encodeURIComponent(request.id), { method: 'POST', body: JSON.stringify({ approved }) }); modal.remove(); displayedRequestId = null; if (approved) await loadWorkdirs(); return result; }
+      catch (e) { buttons.forEach((button) => { button.disabled = false; }); alert(e.message); return null; }
+    };
+    modal.querySelector('.wd-approve').onclick = () => finish(true);
+    modal.querySelector('.wd-deny').onclick = () => finish(false);
+    modal.addEventListener('click', (e) => { if (e.target === modal) finish(false); });
   }
 
-  // 将工具定义注入现有页面，不需要改动主聊天页面的 CHAT_TOOLS 常量。
-  const WORKDIR_TOOL = {
-    type: 'function',
-    function: {
-      name: 'add_working_directory',
-      description: '请求将 AI 项目的工作目录添加并切换到指定的绝对路径。此操作需要网页用户明确批准；如果用户拒绝，必须继续使用当前工作目录。',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: '运行 Chat 服务的机器上的工作目录绝对路径，例如 /home/user/project 或 D:\\projects\\demo' }
-        },
-        required: ['path']
-      }
-    }
-  };
-
-  const nativeFetch = window.fetch.bind(window);
-  window.fetch = (input, options = {}) => {
+  async function pollApprovals() {
     try {
-      const url = typeof input === 'string' ? input : input?.url || '';
-      if ((url === '/api/chat' || url === '/api/revise') && options?.body && typeof options.body === 'string') {
-        const payload = JSON.parse(options.body);
-        const tools = Array.isArray(payload.tools) ? payload.tools.slice() : [];
-        if (!tools.some((tool) => tool?.function?.name === WORKDIR_TOOL.function.name)) tools.push(WORKDIR_TOOL);
-        payload.tools = tools;
-        options = { ...options, body: JSON.stringify(payload) };
-      }
-    } catch (_) {}
-    return nativeFetch(input, options);
-  };
+      const data = await api('/api/workdir-requests');
+      const request = data.requests?.[0];
+      if (request) showApproval(request);
+    } catch (e) { console.debug('工作目录审批轮询失败:', e.message); }
+  }
 
-  // executeTool 定义在 index.html 中；保存原实现后只接管新增工具。
-  const originalExecuteTool = window.executeTool;
-  window.executeTool = async function (call) {
-    if (call?.name === 'add_working_directory') {
-      const requestedPath = String(call.arguments?.path || '').trim();
-      if (!requestedPath) return '用户拒绝：工作目录路径为空。';
-      const result = await requestWorkingDirectoryApproval(requestedPath);
-      if (result.approved) {
-        return `用户已批准添加并切换工作目录：${result.path}`;
-      }
-      return result.error
-        ? `用户未批准添加工作目录 ${result.path || requestedPath}：${result.error}`
-        : `用户已否决添加工作目录：${result.path || requestedPath}`;
-    }
-    if (typeof originalExecuteTool === 'function') return originalExecuteTool(call);
-    return '未知工具: ' + (call?.name || '');
-  };
+  function startApprovalPolling() {
+    if (approvalPollTimer) return;
+    pollApprovals();
+    approvalPollTimer = setInterval(pollApprovals, 1000);
+  }
 
   async function boot() {
-    try {
-      createUI();
-      await loadWorkdirs();
-    } catch (e) {
-      console.error('工作目录功能初始化失败:', e);
-    }
+    try { createUI(); await loadWorkdirs(); startApprovalPolling(); }
+    catch (e) { console.error('工作目录功能初始化失败:', e); }
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
