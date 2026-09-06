@@ -109,11 +109,32 @@ async function chat(messages) {
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 const messages = [];
-console.log(`Chat CLI | model: ${MODEL}`);
-console.log(`工作目录: ${manager.current}`);
-console.log('输入 /workdir 查看目录，输入 /quit 退出。');
 
 async function main() {
+  const askIndex = process.argv.indexOf('--ask');
+  if (askIndex !== -1) {
+    const input = process.argv.slice(askIndex + 1).join(' ').trim();
+    if (!input) {
+      console.error('用法: cli.js --ask "你的问题"');
+      rl.close();
+      process.exit(1);
+    }
+    try {
+      const answer = await chat([{ role: 'user', content: input }]);
+      process.stdout.write(answer + '\n');
+    } catch (e) {
+      console.error(e.message);
+      process.exitCode = 1;
+    } finally {
+      rl.close();
+    }
+    return;
+  }
+
+  console.log(`Chat CLI | model: ${MODEL}`);
+  console.log(`工作目录: ${manager.current}`);
+  console.log('输入 /workdir 查看目录，输入 /quit 退出。');
+
   while (true) {
     const input = (await ask('\nYou> ')).trim();
     if (!input) continue;
