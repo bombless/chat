@@ -1,6 +1,7 @@
+const path = require('path');
 const keytar = require('keytar');
 
-const SERVICE = __dirname;
+const SERVICE = path.resolve(__dirname, '../..');
 
 async function getCredentials() {
   const [url, key, model, modelsUrl] = await Promise.all([
@@ -11,9 +12,8 @@ async function getCredentials() {
   ]);
   return { url, key, model, modelsUrl };
 }
-
 async function getCredential(name) { return keytar.getPassword(SERVICE, name); }
 async function setCredential(name, value) { return keytar.setPassword(SERVICE, name, value); }
 async function deleteCredential(name) { return keytar.deletePassword(SERVICE, name); }
 
-module.exports = { getCredentials, getCredential, setCredential, deleteCredential };
+module.exports = { SERVICE, getCredentials, getCredential, setCredential, deleteCredential };
