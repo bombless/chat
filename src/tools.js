@@ -7,15 +7,11 @@ function createTools(options = {}) {
   const manager = options.manager || new WorkdirManager({
     initial: options.initial || process.env.PROJECT_ROOT || process.cwd(),
     appRoot: options.appRoot || path.resolve(__dirname, '..'),
-    allowedRoots: (process.env.WORKDIR_ALLOWED_ROOTS || '').split(path.delimiter).filter(Boolean),
-    allowOutsideApp: process.env.WORKDIR_ALLOW_OUTSIDE_APP !== 'false',
+    allowedRoots: options.allowedRoots || (process.env.WORKDIR_ALLOWED_ROOTS || '').split(path.delimiter).filter(Boolean),
+    allowOutsideApp: options.allowOutsideApp !== undefined ? options.allowOutsideApp : process.env.WORKDIR_ALLOW_OUTSIDE_APP !== 'false',
     file: options.workdirFile,
   });
-
-  const project = createProjectTools({
-    manager,
-    approve: options.approveWorkingDirectory,
-  });
+  const project = createProjectTools({ manager, approve: options.approveWorkingDirectory });
   const definitions = [...project.definitions, pythonTool];
   const byName = new Map(definitions.map(tool => [tool.function.name, tool]));
 
