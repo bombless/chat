@@ -3,14 +3,11 @@ const path = require('path');
 const readline = require('readline');
 const { execFile } = require('child_process');
 const { WorkdirManager } = require('./workdir-manager');
+const keytar = require('keytar');
 
-const API_URL = process.env.URL;
-const API_KEY = process.env.KEY;
-const MODEL = process.env.MODEL || 'gpt-3.5-turbo';
-if (!API_URL) {
-  console.error('缺少 URL 环境变量（OpenAI-compatible chat endpoint）。');
-  process.exit(1);
-}
+let API_URL, API_KEY, MODEL
+
+
 
 const manager = new WorkdirManager({
   initial: process.env.PROJECT_ROOT || process.cwd(),
@@ -111,6 +108,17 @@ const rl = readline.createInterface({ input: process.stdin, output: process.stdo
 const messages = [];
 
 async function main() {
+  [API_URL, API_KEY, MODEL] = await Promise.all([
+    keytar.getPassword(__dirname, 'URL'),
+    keytar.getPassword(__dirname, 'KEY'),
+    keytar.getPassword(__dirname, 'MODEL'),
+  ]);
+    
+  if (!API_URL) {
+    console.error('缺少 URL 环境变量（OpenAI-compatible chat endpoint）。');
+    process.exit(1);
+  }
+
   const askIndex = process.argv.indexOf('--ask');
   if (askIndex !== -1) {
     const input = process.argv.slice(askIndex + 1).join(' ').trim();
