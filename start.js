@@ -3,17 +3,15 @@
 
 const Chat = require('./chat.js');
 const readline = require('readline');
+const keytar = require('keytar');
 
 // ============== 配置 ==============
-const CONFIG = {
-  // 从这里修改你的 API 配置
-  apiKey: process.env.KEY,
-  defaultModel: process.env.MODEL,
-};
+
+const CONFIG = {};
 
 // 构建完整 URL
-const CHAT_URL = process.env.URL;
-const MODELS_URL = process.env.MODELS_URL;
+// const CONFIG.url = process.env.URL;
+// const CONFIG.models_url = process.env.CONFIG.models_url;
 
 // ============== 命令行界面 ==============
 const rl = readline.createInterface({
@@ -24,7 +22,7 @@ const rl = readline.createInterface({
 
 // 当前使用的 Chat 实例
 let chat = null;
-let currentModel = CONFIG.defaultModel;
+let currentModel = null;
 let availableModels = [];
 
 // 颜色输出辅助
@@ -63,8 +61,8 @@ async function listModels() {
     console.log(color.cyan + '正在获取模型列表...' + color.reset);
     
     const tempChat = new Chat({
-      url: CHAT_URL,
-      modelsUrl: MODELS_URL,
+      url: CONFIG.url,
+      modelsUrl: CONFIG.models_url,
       apiKey: CONFIG.apiKey,
       model: currentModel,
     });
@@ -114,8 +112,8 @@ function switchModel(modelName) {
   currentModel = modelName;
   // 重新创建 chat 实例
   chat = new Chat({
-    url: CHAT_URL,
-    modelsUrl: MODELS_URL,
+    url: CONFIG.url,
+    modelsUrl: CONFIG.models_url,
     apiKey: CONFIG.apiKey,
     model: currentModel,
     system: 'You are a helpful assistant.',
@@ -139,8 +137,8 @@ async function streamResponse(prompt, signal) {
   if (!chat) {
     // 初始化 chat
     chat = new Chat({
-      url: CHAT_URL,
-      modelsUrl: MODELS_URL,
+      url: CONFIG.url,
+      modelsUrl: CONFIG.models_url,
       apiKey: CONFIG.apiKey,
       model: currentModel,
       system: 'You are a helpful assistant.',
@@ -189,6 +187,19 @@ async function streamResponse(prompt, signal) {
 
 // ============== 主循环 ==============
 async function main() {
+  
+  const [apiKey, model, url, models_url] = await Promise.all([
+    keytar.getPassword(__dirname, 'KEY'), 
+    keytar.getPassword(__dirname, 'MODEL'),
+    keytar.getPassword(__dirname, 'URL'), 
+    keytar.getPassword(__dirname, 'CONFIG.models_url'),
+  ]);
+  currentModel = model;
+  console.log('model', model)
+  CONFIG.apiKey = apiKey;
+  CONFIG.model = model;
+  CONFIG.url = url;
+  CONFIG.models_url = models_url;
   console.log(`
 ${color.bold}${color.cyan}╔═══════════════════════════════════════╗${color.reset}
 ${color.bold}${color.cyan}║     🤖 多轮对话助手 v1.0            ║${color.reset}
@@ -197,8 +208,8 @@ ${color.bold}${color.cyan}╚═════════════════
   
   // 初始化 chat
   chat = new Chat({
-    url: CHAT_URL,
-    modelsUrl: MODELS_URL,
+    url: CONFIG.url,
+    modelsUrl: CONFIG.models_url,
     apiKey: CONFIG.apiKey,
     model: currentModel,
     system: 'You are a helpful assistant.',
