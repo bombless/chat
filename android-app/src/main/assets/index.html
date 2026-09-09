@@ -774,6 +774,8 @@
     </div>
 
     <!-- ====== 配置 ====== -->
+    <script src="chat-core.js"></script>
+    <script src="local-runtime.js"></script>
     <script>
         const CHAT_URL = '/api/chat'
         const MODELS_URL = '/api/models'
@@ -813,82 +815,34 @@
             }
         ];
 
-        class Chat {
-            constructor(opts) {
-                this.url = opts.url;
-                this.modelsUrl = opts.modelsUrl;
-                this.model = opts.model;
-                this.maxHistory = opts.maxHistory ?? 200;
-                this.extraHeaders = opts.headers || {};
-                this.messages = [];
-                this.tools = opts.tools;
-                if (opts.system) this.messages.push({ role: 'system', content: opts.system });
-            }
-            reset() { this.messages = this.messages.filter(m => m.role === 'system'); }
-            async models(name) {
-                const url = this.modelsUrl + '?capabilities=TG&page_size=99&name=' + encodeURIComponent(name || '');
-                const resp = await fetch(url, { headers: { 'Content-Type': 'application/json', ...this.extraHeaders } });
-                return resp.json();
-            }
-            async *request(signal) {
-                const systemMsgs = this.messages.filter(m => m.role === 'system');
-                const turnMsgs = this.messages.filter(m => m.role !== 'system');
-                const trimmed = turnMsgs.slice(-this.maxHistory * 2);
-                const reqMessages = [...systemMsgs, ...trimmed];
-                const resp = await fetch(this.url, {
-                    method: 'POST', signal,
-                    headers: { 'Content-Type': 'application/json', ...this.extraHeaders },
-                    body: JSON.stringify({ tools: this.tools || [], model: this.model, messages: reqMessages, stream: true })
-                });
-                if (!resp.ok || !resp.body) {
-                    const text = await resp.text().catch(() => '');
-                    let error;
-                    try { if (JSON.parse(text)?.error?.code === 'insufficient_quota') error = 'insufficient_quota'; } catch {}
-                    if (error) throw error;
-                    throw new Error(`请求失败 ${resp.status}: ${text}`);
-                }
-                const reader = resp.body.getReader();
-                const decoder = new TextDecoder();
-                let buffer = '';
-                let content = '';
-                let toolCalls = {};
-                while (true) {
-                    const { value, done } = await reader.read();
-                    if (done) break;
-                    buffer += decoder.decode(value, { stream: true });
-                    let nl;
-                    while ((nl = buffer.indexOf('\n')) >= 0) {
-                        const line = buffer.slice(0, nl).trim();
-                        buffer = buffer.slice(nl + 1);
-                        if (!line.startsWith('data:')) continue;
-                        const data = line.slice(5).trim();
-                        if (!data || data === '[DONE]') continue;
-                        try {
-                            const json = JSON.parse(data);
-                            const delta = json?.choices?.[0]?.delta || {};
-                            if (delta.content) { content += delta.content; yield ['t', delta.content]; }
-                            for (const tc of delta.tool_calls || []) {
-                                const idx = tc.index ?? 0;
-                                if (!toolCalls[idx]) toolCalls[idx] = { id: '', name: '', arguments: '' };
-                                if (tc.id) toolCalls[idx].id = tc.id;
-                                if (tc.function?.name) toolCalls[idx].name += tc.function.name;
-                                if (tc.function?.arguments) toolCalls[idx].arguments += tc.function.arguments;
-                            }
-                            if (json?.choices?.[0]?.finish_reason === 'tool_calls') {
-                                const calls = Object.values(toolCalls).map(tc => ({ id: tc.id, name: tc.name, arguments: JSON.parse(tc.arguments || '{}') }));
-                                if (calls.length) yield ['o', JSON.stringify(calls[0])];
-                                if (calls.length) this.messages.push({ role: 'assistant', content: content || null, tool_calls: calls.map(tc => ({ id: tc.id, type: 'function', function: { name: tc.name, arguments: JSON.stringify(tc.arguments) } })) });
-                            }
-                        } catch (e) { console.debug('解析流式响应失败:', e.message); }
-                    }
-                }
-                if (content) {
-                    const last = this.messages[this.messages.length - 1];
-                    if (!last || last.role !== 'assistant') this.messages.push({ role: 'assistant', content });
-                    else if (!last.tool_calls) last.content = content;
-                }
-            }
-        }
+class Chat {
+    constructor(opts = {}) {
+        const saved = window.ChatApp ? JSON.parse(window.ChatApp.getConfig() || '{}') : {};
+        const cfg = { ...saved, ...opts };
+        if (!cfg.url || !cfg.apiKey) throw new Error('Android 本地模式尚未配置 Provider URL / API Key，请先配置。');
+        this.core = ChatCore.createBrowserChat({
+            url: cfg.url,
+            modelsUrl: cfg.modelsUrl,
+            apiKey: cfg.apiKey,
+            model: cfg.model,
+            maxHistory: cfg.maxHistory ?? 200,
+            headers: cfg.headers,
+            system: cfg.system,
+            tools: cfg.tools
+        });
+    }
+    get messages() { return this.core.messages; }
+    set messages(value) { this.core.messages = value; }
+    reset() { return this.core.reset(); }
+    async models(name) {
+        const data = await this.core.models(name || '');
+        const models = data?.output?.models || data?.data || [];
+        return { data: models.map(m => ({ ...m, id: m.model || m.id })) };
+    }
+    request(signal) { return this.core.request(signal); }
+    ask(prompt, signal) { return this.core.ask(prompt, signal); }
+    reportCalls(calls, signal) { return this.core.reportCalls(calls, signal); }
+}
 
         const dom = {
             messages: document.getElementById('messages'), input: document.getElementById('inputBox'), sendBtn: document.getElementById('sendBtn'),
