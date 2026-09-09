@@ -38,7 +38,16 @@
             margin: 12px;
         }
 
-        /* ========== 顶栏 ========== */
+        .transfer-modal { position: fixed; inset: 0; background: rgba(0,0,0,.72); display: none; align-items: center; justify-content: center; z-index: 1000; padding: 20px; }
+        .transfer-modal.open { display: flex; }
+        .transfer-card { width: min(420px, 100%); background: #16213e; border: 1px solid #2a4a70; border-radius: 16px; padding: 24px; box-shadow: 0 20px 60px rgba(0,0,0,.6); text-align: center; }
+        .transfer-card h3 { margin-bottom: 16px; }
+        .transfer-qr { width: 280px; height: 280px; background: white; border-radius: 8px; padding: 8px; object-fit: contain; }
+        .transfer-muted { color: #9fb0c5; font-size: 13px; margin: 10px 0; line-height: 1.6; }
+        .transfer-code-input { width: 180px; text-align: center; font-size: 28px; letter-spacing: 8px; padding: 10px; border-radius: 8px; border: 1px solid #42658d; background: #0f1a31; color: #fff; }
+        .transfer-code { font-size: 34px; font-weight: 800; letter-spacing: 8px; margin: 18px 0; }
+        .transfer-actions { display: flex; gap: 10px; justify-content: center; margin-top: 18px; }
+        .transfer-error { color: #ff8b8b; font-size: 13px; min-height: 20px; margin-top: 10px; }        /* ========== 顶栏 ========== */
         .header {
             display: flex;
             align-items: center;
@@ -736,6 +745,7 @@
             </div>
             <div class="header-actions">
                 <button class="btn btn-warning" id="btnKb" title="打开知识库面板">📚 <span>知识库</span></button>
+                <button class="btn btn-warning" id="btnConfigExport" title="导出 Provider 配置">📤 <span>导出配置</span></button>
                 <button class="btn btn-warning" id="btnModels" title="刷新模型列表">📋 <span>模型</span></button>
                 <button class="btn btn-danger" id="btnReset">🔄 <span>重置</span></button>
                 <button class="btn btn-success" id="btnClear">🗑️ <span>清屏</span></button>
@@ -752,7 +762,26 @@
             <div class="kb-list" id="kbList"></div>
         </div>
 
-        <!-- ====== 消息区域 ====== -->
+        <div class="transfer-modal" id="transferModal">
+            <div class="transfer-card">
+                <h3>📤 导出配置</h3>
+                <div id="transferCreating">正在生成连接……</div>
+                <div id="transferWaiting" style="display:none">
+                    <img class="transfer-qr" id="transferQr" alt="配置迁移二维码" />
+                    <div class="transfer-muted">请使用 Android App 扫描此二维码<br/>确保手机和电脑连接到同一个局域网</div>
+                    <div id="transferWaitText">等待 Android 连接……</div>
+                    <div class="transfer-muted">有效期：<span id="transferExpiry">05:00</span></div>
+                </div>
+                <div id="transferConnected" style="display:none">
+                    <div>Android 已连接</div>
+                    <div class="transfer-muted">请确认两端显示的验证码，然后在电脑端输入</div>
+                    <input class="transfer-code-input" id="transferCode" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="______" />
+                    <div class="transfer-error" id="transferError"></div>
+                    <div class="transfer-actions"><button class="btn btn-success" id="transferConfirm">确认导出</button><button class="btn" id="transferCancel">取消</button></div>
+                </div>
+                <div id="transferCompleted" style="display:none"><div style="font-size:38px">✅</div><div>配置导出成功</div><div class="transfer-muted">Android 已成功获取配置。</div><button class="btn" id="transferDone">完成</button></div>
+            </div>
+        </div>        <!-- ====== 消息区域 ====== -->
         <div class="messages" id="messages">
             <div class="empty-state">
                 <div class="icon">💬</div>
@@ -896,6 +925,7 @@
             charCount: document.getElementById('charCount'), btnModels: document.getElementById('btnModels'), btnReset: document.getElementById('btnReset'),
             btnClear: document.getElementById('btnClear'), btnKb: document.getElementById('btnKb'), kbPanel: document.getElementById('kbPanel'),
             kbUrlInput: document.getElementById('kbUrlInput'), kbFetchBtn: document.getElementById('kbFetchBtn'), kbList: document.getElementById('kbList'), kbStatus: document.getElementById('kbStatus'),
+            btnConfigExport: document.getElementById('btnConfigExport'), transferModal: document.getElementById('transferModal'), transferCreating: document.getElementById('transferCreating'), transferWaiting: document.getElementById('transferWaiting'), transferConnected: document.getElementById('transferConnected'), transferCompleted: document.getElementById('transferCompleted'), transferQr: document.getElementById('transferQr'), transferExpiry: document.getElementById('transferExpiry'), transferError: document.getElementById('transferError'), transferCode: document.getElementById('transferCode'), transferConfirm: document.getElementById('transferConfirm'), transferCancel: document.getElementById('transferCancel'), transferDone: document.getElementById('transferDone'),
         };
         let chat = null;
         let currentModel = 'gpt-3.5-turbo';
@@ -956,7 +986,27 @@
             } catch (err) { if (err.name === 'AbortError') addMessage('system', '⏹️ 已取消请求'); else if (err === 'insufficient_quota') addMessage('error', '❌ 配额不足，请检查账户余额'); else { console.error('请求错误:', err); addMessage('error', '❌ ' + (err.message || err)); } finishStreaming(); setStatus('错误', 'error'); }
             finally { isProcessing = false; dom.sendBtn.disabled = false; dom.sendBtn.innerHTML = '<span class="icon">➤</span> 发送'; }
         }
-        dom.sendBtn.onclick = sendMessage; dom.input.addEventListener('input', () => { dom.charCount.textContent = dom.input.value.length; dom.input.style.height = 'auto'; dom.input.style.height = Math.min(dom.input.scrollHeight, 120) + 'px'; }); dom.input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }); dom.btnClear.onclick = () => { clearMessages(); if (chat) chat.reset(); }; dom.btnReset.onclick = () => { if (confirm('确定要重置当前对话吗？')) { clearMessages(); if (chat) chat.reset(); } }; dom.btnModels.onclick = loadModels; dom.btnKb.onclick = () => { dom.kbPanel.classList.toggle('open'); if (dom.kbPanel.classList.contains('open')) loadKB(); }; dom.kbFetchBtn.onclick = fetchKB; dom.kbUrlInput.addEventListener('keydown', e => { if (e.key === 'Enter') fetchKB(); }); loadModels(); loadKB();
+        let transferToken = null, transferPoll = null, transferTimer = null
+        function transferShow(state) { ['creating','waiting','connected','completed'].forEach(x => { const el = dom['transfer' + x[0].toUpperCase() + x.slice(1)]; if (el) el.style.display = x === state ? '' : 'none'; }); }
+        function transferClose() { if (transferPoll) clearInterval(transferPoll); if (transferTimer) clearInterval(transferTimer); transferPoll = transferTimer = null; transferToken = null; dom.transferModal.classList.remove('open'); }
+        async function startConfigTransfer() {
+            if (!dom.btnConfigExport) return
+            dom.transferModal.classList.add('open'); transferShow('creating'); dom.transferError.textContent = ''; dom.transferCode.value = ''
+            try {
+                const r = await fetch('/api/config-transfer', { method: 'POST', headers: { 'Content-Type': 'application/json' } }); const d = await r.json(); if (!r.ok) throw new Error(d.error || r.status)
+                transferToken = d.token
+                const qr = await (await fetch('/api/config-transfer/qr?t=' + encodeURIComponent(transferToken))).json(); if (!qr.dataUrl) throw new Error(qr.error || '二维码生成失败')
+                dom.transferQr.src = qr.dataUrl; transferShow('waiting'); let left = d.expiresIn || 300; dom.transferExpiry.textContent = '05:00'
+                transferTimer = setInterval(() => { left--; const m=Math.floor(Math.max(0,left)/60), sec=Math.max(0,left)%60; dom.transferExpiry.textContent = String(m).padStart(2,'0')+':'+String(sec).padStart(2,'0'); if(left<=0){clearInterval(transferTimer); transferTimer=null; dom.transferError.textContent='连接已过期，请重新导出';} },1000)
+                transferPoll = setInterval(async () => { if(!transferToken)return; try { const r=await fetch('/api/config-transfer/status?t='+encodeURIComponent(transferToken)); const d=await r.json(); if(!r.ok) { if(r.status===410){clearInterval(transferPoll); transferPoll=null; dom.transferError.textContent='连接已过期，请重新导出';} return; } if(d.joined && !d.confirmed){ clearInterval(transferPoll); transferPoll=null; transferShow('connected'); dom.transferCode.focus(); } } catch(e) { console.debug('迁移状态轮询失败:', e.message); } },1000)
+            } catch(e) { transferShow('connected'); dom.transferError.textContent='❌ '+e.message }
+        }
+        async function confirmConfigTransfer() {
+            const code=dom.transferCode.value.trim(); dom.transferError.textContent=''; if(!/^\d{6}$/.test(code)){dom.transferError.textContent='请输入 6 位验证码';return}
+            dom.transferConfirm.disabled=true; try { const r=await fetch('/api/config-transfer/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:transferToken,code})}); const d=await r.json(); if(!r.ok) throw new Error(d.error || r.status); transferShow('completed'); if(transferTimer)clearInterval(transferTimer) } catch(e){dom.transferError.textContent='❌ '+e.message} finally{dom.transferConfirm.disabled=false}
+        }        dom.sendBtn.onclick = sendMessage;
+        if (dom.btnConfigExport) dom.btnConfigExport.onclick = startConfigTransfer;
+        dom.transferConfirm.onclick = confirmConfigTransfer; dom.transferCancel.onclick = async () => { if (transferToken) await fetch('/api/config-transfer/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:transferToken})}).catch(()=>{}); transferClose(); }; dom.transferDone.onclick = transferClose; dom.transferModal.addEventListener('click', e => { if(e.target===dom.transferModal) transferClose(); }); dom.input.addEventListener('input', () => { dom.charCount.textContent = dom.input.value.length; dom.input.style.height = 'auto'; dom.input.style.height = Math.min(dom.input.scrollHeight, 120) + 'px'; }); dom.input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }); dom.btnClear.onclick = () => { clearMessages(); if (chat) chat.reset(); }; dom.btnReset.onclick = () => { if (confirm('确定要重置当前对话吗？')) { clearMessages(); if (chat) chat.reset(); } }; dom.btnModels.onclick = loadModels; dom.btnKb.onclick = () => { dom.kbPanel.classList.toggle('open'); if (dom.kbPanel.classList.contains('open')) loadKB(); }; dom.kbFetchBtn.onclick = fetchKB; dom.kbUrlInput.addEventListener('keydown', e => { if (e.key === 'Enter') fetchKB(); }); loadModels(); loadKB();
     </script>
     <script src="tools-ui.js"></script>
     <script src="workdir-ui.js"></script>

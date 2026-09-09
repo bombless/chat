@@ -4,9 +4,45 @@ const express = require('express')
 const cors = require('cors')
 const path = require('path')
 const fs = require('fs')
+const crypto = require('crypto')
+const os = require('os')
 const { execFile } = require('child_process')
 const { WorkdirManager } = require('./workdir-manager')
 const keytar = require('keytar')
+const QRCode = require('qrcode')
+const CONFIG_TRANSFER_TTL = 5 * 60 * 1000
+const CONFIG_TRANSFER_MAX_ATTEMPTS = 5
+const configTransfers = new Map()
+function getLanIPv4 () {
+  const candidates = []
+  for (const entries of Object.values(os.networkInterfaces())) for (const entry of entries || []) {
+    if (entry.family === 'IPv4' && !entry.internal) candidates.push({ address: entry.address, privateRange: /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(entry.address) })
+  }
+  return (candidates.find(x => x.privateRange) || candidates[0])?.address || '127.0.0.1'
+}
+function newTransferSession () {
+  const token = crypto.randomBytes(32).toString('base64url')
+  const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0')
+  const now = Date.now()
+  const session = { token, code, createdAt: now, expiresAt: now + CONFIG_TRANSFER_TTL, publicKey: null, joined: false, confirmed: false, consumed: false, attempts: 0 }
+  configTransfers.set(token, session)
+  return session
+}
+function getTransfer (token) {
+  const session = configTransfers.get(token)
+  if (!session) return { session: null, error: 'transfer session not found' }
+  if (session.consumed) return { session, error: 'transfer already consumed' }
+  if (Date.now() >= session.expiresAt) { configTransfers.delete(token); return { session: null, error: 'transfer session expired' } }
+  return { session, error: null }
+}
+function encryptTransferConfig (publicKey, plaintext) {
+  const aesKey = crypto.randomBytes(32), iv = crypto.randomBytes(12)
+  const cipher = crypto.createCipheriv('aes-256-gcm', aesKey, iv)
+  const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
+  const encryptedKey = crypto.publicEncrypt({ key: publicKey, padding: crypto.constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' }, aesKey)
+  return { algorithm: 'AES-256-GCM+RSA-OAEP-SHA256', encryptedKey: encryptedKey.toString('base64'), iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), ciphertext: ciphertext.toString('base64') }
+}
+setInterval(() => { const now = Date.now(); for (const [token, session] of configTransfers) if (session.consumed || now >= session.expiresAt) configTransfers.delete(token) }, 60 * 1000).unref()
 
 const app = express()
 const CONFIG = Promise.all([
@@ -646,6 +682,80 @@ app.use(cors())
 app.use(express.json({ limit: '10mb' }))
 app.use(express.static('public'))
 app.get('/api/chat-tools', (req, res) => res.json({ tools: CHAT_TOOLS }))
+app.post('/api/config-transfer', (req, res) => {
+  try {
+    const session = newTransferSession()
+    const port = config.port || 3000
+    const url = `http://${getLanIPv4()}:${port}/api/config-transfer/join?t=${encodeURIComponent(session.token)}`
+    res.json({ token: session.token, url, expiresIn: Math.floor(CONFIG_TRANSFER_TTL / 1000) })
+  } catch (e) { res.status(500).json({ error: e.message || String(e) }) }
+})
+
+app.get('/api/config-transfer/qr', async (req, res) => {
+  const token = String(req.query.t || '')
+  const { session, error } = getTransfer(token)
+  if (!session) return res.status(error === 'transfer session expired' ? 410 : 404).json({ error })
+  try {
+    const url = `http://${getLanIPv4()}:${config.port || 3000}/api/config-transfer/join?t=${encodeURIComponent(token)}`
+    const png = await QRCode.toDataURL(url, { errorCorrectionLevel: 'M', margin: 2, width: 320 })
+    res.json({ dataUrl: png, url })
+  } catch (e) { res.status(500).json({ error: e.message || String(e) }) }
+})
+app.get('/api/config-transfer/status', (req, res) => {
+  const { session, error } = getTransfer(String(req.query.t || ''))
+  if (!session) return res.status(error === 'transfer session expired' ? 410 : 404).json({ error })
+  res.json({ joined: session.joined, confirmed: session.confirmed, expiresIn: Math.max(0, Math.ceil((session.expiresAt - Date.now()) / 1000)) })
+})
+
+app.post('/api/config-transfer/join', (req, res) => {
+  const token = String(req.body?.token || req.query.t || '')
+  const publicKey = String(req.body?.publicKey || '')
+  const { session, error } = getTransfer(token)
+  if (!session) return res.status(error === 'transfer session expired' ? 410 : 404).json({ error })
+  if (session.joined) return res.status(409).json({ error: 'another device is already connected' })
+  if (!publicKey || publicKey.length > 10000) return res.status(400).json({ error: 'invalid public key' })
+  try { crypto.createPublicKey(publicKey) } catch (_) { return res.status(400).json({ error: 'invalid public key' }) }
+  session.publicKey = publicKey
+  session.joined = true
+  res.json({ ok: true, code: session.code, expiresIn: Math.max(0, Math.ceil((session.expiresAt - Date.now()) / 1000)) })
+})
+
+app.post('/api/config-transfer/confirm', (req, res) => {
+  const token = String(req.body?.token || '')
+  const code = String(req.body?.code || '')
+  const { session, error } = getTransfer(token)
+  if (!session) return res.status(error === 'transfer session expired' ? 410 : 404).json({ error })
+  if (!session.joined) return res.status(409).json({ error: 'Android has not joined yet' })
+  if (session.attempts >= CONFIG_TRANSFER_MAX_ATTEMPTS) { configTransfers.delete(token); return res.status(429).json({ error: 'too many attempts' }) }
+  session.attempts++
+  if (!/^\d{6}$/.test(code) || !crypto.timingSafeEqual(Buffer.from(code.padStart(6, '0')), Buffer.from(session.code))) {
+    if (session.attempts >= CONFIG_TRANSFER_MAX_ATTEMPTS) configTransfers.delete(token)
+    return res.status(401).json({ error: 'invalid confirmation code', attemptsRemaining: Math.max(0, CONFIG_TRANSFER_MAX_ATTEMPTS - session.attempts) })
+  }
+  session.confirmed = true
+  res.json({ ok: true })
+})
+
+app.post('/api/config-transfer/cancel', (req, res) => {
+  const token = String(req.body?.token || '')
+  if (token) configTransfers.delete(token)
+  res.json({ ok: true })
+})
+
+app.get('/api/config-transfer/config', async (req, res) => {
+  const token = String(req.query.t || '')
+  const { session, error } = getTransfer(token)
+  if (!session) return res.status(error === 'transfer already consumed' || error === 'transfer session expired' ? 410 : 404).json({ error })
+  if (!session.confirmed) return res.status(403).json({ error: 'transfer not confirmed' })
+  if (!session.publicKey) return res.status(409).json({ error: 'missing Android public key' })
+  try {
+    const c = await CONFIG
+    const payload = JSON.stringify({ url: c.url || '', modelsUrl: c.models_url || '', apiKey: c.key || '', model: c.model || '' })
+    const encrypted = encryptTransferConfig(session.publicKey, payload)
+    session.consumed = true
+    res.json(encrypted)
+  } catch (e) { res.status(500).json({ error: e.message || String(e) }) }
+})
 app.get('/api/workdirs', (req, res) =>
   res.json({ current: workdirManager.current, workdirs: workdirManager.list() })
 )
