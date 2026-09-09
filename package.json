@@ -1,7 +1,9 @@
 {
   "scripts": {
     "start": "node cli.js",
-    "server": "node server.js"
+    "cli": "node cli.js",
+    "web": "node web.js",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=22"
