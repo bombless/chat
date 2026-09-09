@@ -103,11 +103,11 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface public void importConfig() {
             runOnUiThread(() -> {
-                ScanOptions options = new ScanOptions();
-                options.setPrompt("扫描电脑端配置迁移二维码");
-                options.setBeepEnabled(false);
-                options.setOrientationLocked(true);
-                new com.google.zxing.integration.android.IntentIntegrator(MainActivity.this).setPrompt("扫描电脑端配置迁移二维码").setBeepEnabled(false).setOrientationLocked(true).initiateScan();
+                new com.google.zxing.integration.android.IntentIntegrator(MainActivity.this)
+                    .setPrompt("扫描电脑端配置迁移二维码")
+                    .setBeepEnabled(false)
+                    .setOrientationLocked(false)
+                    .initiateScan();
             });
         }
 
@@ -174,14 +174,16 @@ public class MainActivity extends Activity {
     }
 
     private void onScannedContents(String contents) {
-        if (!contents.startsWith("http")) {
-            Toast.makeText(this, "二维码不是有效的配置迁移地址", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        Uri uri = Uri.parse(contents);
+        String scanned = contents == null ? "" : contents.trim();
+        Uri uri = Uri.parse(scanned);
+        String scheme = uri.getScheme();
+        String host = uri.getHost();
+        int port = uri.getPort();
         String token = uri.getQueryParameter("t");
-        if (token == null || token.length() < 32) {
-            Toast.makeText(this, "无效的配置迁移二维码", Toast.LENGTH_SHORT).show();
+        if (!("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme))
+                || host == null || host.isEmpty() || (port != -1 && (port < 1 || port > 65535))
+                || token == null || token.length() < 32) {
+            Toast.makeText(this, "二维码不是有效的配置迁移地址", Toast.LENGTH_SHORT).show();
             return;
         }
         transferToken = token;
@@ -191,7 +193,7 @@ public class MainActivity extends Activity {
             KeyPair pair = gen.generateKeyPair();
             transferPrivateKey = pair.getPrivate();
             String publicKey = Base64.getEncoder().encodeToString(pair.getPublic().getEncoded());
-            String base = new Uri.Builder().scheme(uri.getScheme()).authority(uri.getAuthority()).build().toString();
+            String base = scheme + "://" + host + (port == -1 ? "" : ":" + port);
             joinTransfer(base, token, publicKey);
         } catch (Exception e) {
             showError("无法建立安全连接：" + e.getMessage());
