@@ -2,3 +2,5 @@
 /node_modules/
 /kb.json
 /.workdirs.json
+/android-app/build 
+/android-app/.gradle 
