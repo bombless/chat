@@ -836,7 +836,7 @@ app.get('/api/health', (req, res) =>
 app.use(express.static(__dirname))
 CONFIG.then(({port}) => {
 
-  app.listen(port, () => {
+  app.listen(port, '0.0.0.0', () => {
     console.log(`🚀 代理服务已启动: http://localhost:${port}`)
     console.log(`📡 聊天接口: http://localhost:${port}/api/chat`)
     console.log(`📋 模型接口: http://localhost:${port}/api/models`)
