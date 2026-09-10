@@ -42,6 +42,21 @@ function encryptTransferConfig (publicKey, plaintext) {
   const encryptedKey = crypto.publicEncrypt({ key: publicKey, padding: crypto.constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' }, aesKey)
   return { algorithm: 'AES-256-GCM+RSA-OAEP-SHA256', encryptedKey: encryptedKey.toString('base64'), iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), ciphertext: ciphertext.toString('base64') }
 }
+// Android sends the X.509 SubjectPublicKeyInfo bytes as standard Base64,
+// while crypto.createPublicKey(string) only recognizes PEM text. Normalize
+// both representations to a KeyObject before accepting a transfer session.
+function parseTransferPublicKey (value) {
+  const text = String(value || '').trim()
+  if (!text) throw new Error('empty public key')
+  try { return crypto.createPublicKey(text) } catch (_) {}
+
+  // Buffer.from(base64) is intentionally permissive, so reject malformed
+  // input first and require a canonical DER/SPKI public-key representation.
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(text) || text.length % 4 !== 0) throw new Error('invalid public key')
+  const der = Buffer.from(text, 'base64')
+  if (!der.length) throw new Error('invalid public key')
+  return crypto.createPublicKey({ key: der, format: 'der', type: 'spki' })
+}
 setInterval(() => { const now = Date.now(); for (const [token, session] of configTransfers) if (session.consumed || now >= session.expiresAt) configTransfers.delete(token) }, 60 * 1000).unref()
 
 const app = express()
@@ -51,6 +66,7 @@ const CONFIG = Promise.all([
     keytar.getPassword(__dirname, 'MODEL'),
     keytar.getPassword(__dirname, 'MODELS_URL'),
   ]).then(([URL, KEY, MODEL, MODELS_URL]) => {
+    console.log('URL', URL, 'MODEL', MODEL)
     return {
       url: URL,
       key: KEY,
@@ -714,8 +730,7 @@ app.post('/api/config-transfer/join', (req, res) => {
   if (!session) return res.status(error === 'transfer session expired' ? 410 : 404).json({ error })
   if (session.joined) return res.status(409).json({ error: 'another device is already connected' })
   if (!publicKey || publicKey.length > 10000) return res.status(400).json({ error: 'invalid public key' })
-  try { crypto.createPublicKey(publicKey) } catch (_) { return res.status(400).json({ error: 'invalid public key' }) }
-  session.publicKey = publicKey
+  try { session.publicKey = parseTransferPublicKey(publicKey) } catch (_) { return res.status(400).json({ error: 'invalid public key' }) }
   session.joined = true
   res.json({ ok: true, code: session.code, expiresIn: Math.max(0, Math.ceil((session.expiresAt - Date.now()) / 1000)) })
 })
@@ -866,6 +881,7 @@ app.get('/api/models', async (req, res) => {
       }
     )
     const data = await response.json()
+    console.log(data)
     res
       .status(response.status)
       .json({

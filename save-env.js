@@ -12,3 +12,5 @@ const keys = [
 for (const key of keys) {
   keytar.setPassword(__dirname, key, process.env[key])
 }
+
+console.log('done', 'URL=', process.env.URL, 'MODEL=', process.env.MODEL)
