@@ -5,6 +5,7 @@ function createConfig (input = {}) {
     url: input.url,
     modelsUrl: input.modelsUrl,
     apiKey: input.apiKey,
+    api: input.api,
     model: input.model,
     maxHistory: input.maxHistory ?? 200,
     headers: { ...(input.headers || {}) }
