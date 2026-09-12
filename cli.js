@@ -4,10 +4,10 @@ const readline = require('readline');
 const { execFile } = require('child_process');
 const { WorkdirManager } = require('./workdir-manager');
 const keytar = require('keytar');
+const { Chat, ResponsesChat } = require('./index');
 
-let API_URL, API_KEY, MODEL
-
-
+let API_URL, API_KEY, MODEL, API
+let chatClient
 
 const manager = new WorkdirManager({
   initial: process.env.PROJECT_ROOT || process.cwd(),
@@ -74,8 +74,8 @@ function ask(question) {
   return new Promise(resolve => rl.question(question, resolve));
 }
 async function runTool(call) {
-  const name = call.function?.name;
-  const args = JSON.parse(call.function?.arguments || '{}');
+  const name = call.name;
+  const args = call.arguments || {};
   if (name !== 'add_working_directory') return projectTool(name, args);
   const requested = manager.validate(args.path);
   const answer = (await ask(`\n🔐 AI 请求切换工作目录：${requested}\n批准？[y/N] `)).trim().toLowerCase();
@@ -85,21 +85,28 @@ async function runTool(call) {
   return JSON.stringify({ approved: true, path: current, current, message: `用户已批准并切换工作目录：${current}` });
 }
 
+async function consumeRequest (request) {
+  let text = '';
+  const calls = [];
+  for await (const chunk of request) {
+    if (chunk.startsWith('t')) text += chunk.slice(1);
+    else if (chunk.startsWith('o')) calls.push(JSON.parse(chunk.slice(1)));
+  }
+  return { text, calls };
+}
+
 async function chat(messages) {
+  chatClient.messages = messages;
+  let result = await consumeRequest(chatClient.request());
   for (let round = 0; round < 6; round++) {
-    const response = await fetch(API_URL, { method: 'POST', headers: { 'content-type': 'application/json', ...(API_KEY ? { authorization: `Bearer ${API_KEY}` } : {}) }, body: JSON.stringify({ model: MODEL, messages, tools, tool_choice: 'auto', stream: false }) });
-    const text = await response.text();
-    if (!response.ok) throw new Error(`API ${response.status}: ${text.slice(0, 1000)}`);
-    const data = JSON.parse(text);
-    const message = data?.choices?.[0]?.message;
-    if (!message) throw new Error('API 返回中没有 assistant message');
-    messages.push(message);
-    if (!message.tool_calls?.length) return message.content || '';
-    for (const call of message.tool_calls) {
+    if (!result.calls.length) return result.text;
+    const outputs = [];
+    for (const call of result.calls) {
       let content;
       try { content = await runTool(call); } catch (e) { content = JSON.stringify({ ok: false, error: e.message }); }
-      messages.push({ role: 'tool', tool_call_id: call.id, content });
+      outputs.push({ id: call.id, content });
     }
+    result = await consumeRequest(chatClient.reportCalls(outputs));
   }
   throw new Error('工具调用超过最大轮数');
 }
@@ -108,16 +115,20 @@ const rl = readline.createInterface({ input: process.stdin, output: process.stdo
 const messages = [];
 
 async function main() {
-  [API_URL, API_KEY, MODEL] = await Promise.all([
+  [API_URL, API_KEY, MODEL, API] = await Promise.all([
     keytar.getPassword(__dirname, 'URL'),
     keytar.getPassword(__dirname, 'KEY'),
     keytar.getPassword(__dirname, 'MODEL'),
+    keytar.getPassword(__dirname, 'API'),
   ]);
-    
+
   if (!API_URL) {
     console.error('缺少 URL 环境变量（OpenAI-compatible chat endpoint）。');
     process.exit(1);
   }
+
+  const ChatClass = String(API || '').toLowerCase() === 'responses' ? ResponsesChat : Chat;
+  chatClient = new ChatClass({ url: API_URL, apiKey: API_KEY, model: MODEL, tools });
 
   const askIndex = process.argv.indexOf('--ask');
   if (askIndex !== -1) {
@@ -139,7 +150,7 @@ async function main() {
     return;
   }
 
-  console.log(`Chat CLI | model: ${MODEL}`);
+  console.log(`Chat CLI | model: ${MODEL} | API: ${API || 'chat'}`);
   console.log(`工作目录: ${manager.current}`);
   console.log('输入 /workdir 查看目录，输入 /quit 退出。');
 
