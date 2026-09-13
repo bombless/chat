@@ -32,6 +32,18 @@ A runtime supplies an HTTP adapter with:
 
 `stream()` returns a response whose `body` is async-iterable over strings/bytes. This keeps streaming portable to an Android JS runtime without requiring Node streams.
 
+## Responses API
+
+The Node compatibility adapter supports an `API` environment variable. When `API=responses`, `OpenAICompatibleProvider` uses the OpenAI Responses API and maps its input, tool, and streaming event shapes back to the existing Chat Core protocol. Any other value keeps the existing Chat Completions behavior.
+
+For example:
+
+```bash
+API=responses node your-entrypoint.js
+```
+
+The configured URL is converted from `/chat/completions` to `/responses` automatically (or `/responses` is appended when the URL is a base URL).
+
 ## Node compatibility
 
 `chat.js` remains as a compatibility adapter. New code should import from `core/` and inject a provider/runtime adapter.

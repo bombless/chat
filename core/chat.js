@@ -19,6 +19,7 @@ class Chat {
       url: opts.url || this.config.url,
       modelsUrl: opts.modelsUrl || this.config.modelsUrl,
       apiKey: opts.apiKey || this.config.apiKey,
+      api: opts.api || this.config.api,
       model: opts.model || this.config.model,
       maxHistory: opts.maxHistory ?? this.config.maxHistory,
       headers: opts.headers || this.config.headers
