@@ -48,6 +48,9 @@ const CHAT_TOOLS = [
 
 class Chat {
   constructor (opts) {
+    this.api = opts.api ?? 'chat_completions'
+    if (this.api !== 'chat_completions' && this.api !== 'responses')
+      throw new Error(`未知 API 类型: ${this.api}`)
     this.url = opts.url
     this.modelsUrl = opts.modelsUrl
     this.model = opts.model
@@ -76,16 +79,49 @@ class Chat {
     const turnMsgs = this.messages.filter(m => m.role !== 'system')
     const trimmed = turnMsgs.slice(-this.maxHistory * 2)
     const reqMessages = [...systemMsgs, ...trimmed]
+    const body = this.api === 'responses'
+      ? {
+          tools: (this.tools || []).map(tool => {
+            if (tool?.type !== 'function' || !tool.function) return tool
+            return {
+              type: 'function',
+              name: tool.function.name,
+              description: tool.function.description,
+              parameters: tool.function.parameters
+            }
+          }),
+          model: this.model,
+          input: reqMessages.map(message => {
+            if (message.role === 'tool') {
+              return {
+                type: 'function_call_output',
+                call_id: message.tool_call_id,
+                output: message.content
+              }
+            }
+            if (message.role === 'assistant' && message.tool_calls) {
+              return message.tool_calls.map(call => ({
+                type: 'function_call',
+                call_id: call.id,
+                name: call.function.name,
+                arguments: call.function.arguments
+              }))
+            }
+            return { role: message.role, content: message.content }
+          }).flat(),
+          stream: true
+        }
+      : {
+          tools: this.tools || [],
+          model: this.model,
+          messages: reqMessages,
+          stream: true
+        }
     const resp = await fetch(this.url, {
       method: 'POST',
       signal,
       headers: { 'Content-Type': 'application/json', ...this.extraHeaders },
-      body: JSON.stringify({
-        tools: this.tools || [],
-        model: this.model,
-        messages: reqMessages,
-        stream: true
-      })
+      body: JSON.stringify(body)
     })
     if (!resp.ok || !resp.body) {
       const text = await resp.text().catch(() => '')
@@ -102,6 +138,7 @@ class Chat {
     let buffer = ''
     let content = ''
     let toolCalls = {}
+    let completedResponseToolCalls = []
     while (true) {
       const { value, done } = await reader.read()
       if (done) break
@@ -115,45 +152,103 @@ class Chat {
         if (!data || data === '[DONE]') continue
         try {
           const json = JSON.parse(data)
-          const delta = json?.choices?.[0]?.delta || {}
-          if (delta.content) {
-            content += delta.content
-            yield ['t', delta.content]
-          }
-          for (const tc of delta.tool_calls || []) {
-            const idx = tc.index ?? 0
-            if (!toolCalls[idx])
-              toolCalls[idx] = { id: '', name: '', arguments: '' }
-            if (tc.id) toolCalls[idx].id = tc.id
-            if (tc.function?.name) toolCalls[idx].name += tc.function.name
-            if (tc.function?.arguments)
-              toolCalls[idx].arguments += tc.function.arguments
-          }
-          if (json?.choices?.[0]?.finish_reason === 'tool_calls') {
-            const calls = Object.values(toolCalls).map(tc => ({
-              id: tc.id,
-              name: tc.name,
-              arguments: JSON.parse(tc.arguments || '{}')
-            }))
-            if (calls.length) yield ['o', JSON.stringify(calls[0])]
-            if (calls.length)
-              this.messages.push({
-                role: 'assistant',
-                content: content || null,
-                tool_calls: calls.map(tc => ({
-                  id: tc.id,
-                  type: 'function',
-                  function: {
-                    name: tc.name,
-                    arguments: JSON.stringify(tc.arguments)
-                  }
-                }))
-              })
+          if (this.api === 'responses') {
+            if (json.type === 'response.output_text.delta' && json.delta) {
+              content += json.delta
+              yield ['t', json.delta]
+            } else if (json.type === 'response.output_item.added' && json.item?.type === 'function_call') {
+              const item = json.item
+              const key = item.id || item.call_id
+              toolCalls[key] = {
+                id: item.call_id || item.id || '',
+                name: item.name || '',
+                arguments: item.arguments || ''
+              }
+            } else if (json.type === 'response.function_call_arguments.delta') {
+              const key = json.item_id ?? json.output_index ?? json.call_id
+              if (!toolCalls[key]) {
+                toolCalls[key] = {
+                  id: json.call_id || json.item_id || '',
+                  name: json.name || '',
+                  arguments: ''
+                }
+              }
+              if (json.call_id) toolCalls[key].id = json.call_id
+              if (json.name) toolCalls[key].name = json.name
+              toolCalls[key].arguments += json.delta || ''
+            } else if (json.type === 'response.function_call_arguments.done') {
+              const key = json.item_id ?? json.output_index ?? json.call_id
+              const call = toolCalls[key] || {
+                id: json.call_id || json.item_id || '',
+                name: json.name || '',
+                arguments: ''
+              }
+              if (json.call_id) call.id = json.call_id
+              if (json.name) call.name = json.name
+              if (json.arguments !== undefined) call.arguments = json.arguments
+              const result = {
+                id: call.id,
+                name: call.name,
+                arguments: JSON.parse(call.arguments || '{}')
+              }
+              completedResponseToolCalls.push(result)
+              yield ['o', JSON.stringify(result)]
+            }
+          } else {
+            const delta = json?.choices?.[0]?.delta || {}
+            if (delta.content) {
+              content += delta.content
+              yield ['t', delta.content]
+            }
+            for (const tc of delta.tool_calls || []) {
+              const idx = tc.index ?? 0
+              if (!toolCalls[idx])
+                toolCalls[idx] = { id: '', name: '', arguments: '' }
+              if (tc.id) toolCalls[idx].id = tc.id
+              if (tc.function?.name) toolCalls[idx].name += tc.function.name
+              if (tc.function?.arguments)
+                toolCalls[idx].arguments += tc.function.arguments
+            }
+            if (json?.choices?.[0]?.finish_reason === 'tool_calls') {
+              const calls = Object.values(toolCalls).map(tc => ({
+                id: tc.id,
+                name: tc.name,
+                arguments: JSON.parse(tc.arguments || '{}')
+              }))
+              if (calls.length) yield ['o', JSON.stringify(calls[0])]
+              if (calls.length)
+                this.messages.push({
+                  role: 'assistant',
+                  content: content || null,
+                  tool_calls: calls.map(tc => ({
+                    id: tc.id,
+                    type: 'function',
+                    function: {
+                      name: tc.name,
+                      arguments: JSON.stringify(tc.arguments)
+                    }
+                  }))
+                })
+            }
           }
         } catch (e) {
           console.debug('解析流式响应失败:', e.message)
         }
       }
+    }
+    if (this.api === 'responses' && completedResponseToolCalls.length) {
+      this.messages.push({
+        role: 'assistant',
+        content: content || null,
+        tool_calls: completedResponseToolCalls.map(tc => ({
+          id: tc.id,
+          type: 'function',
+          function: {
+            name: tc.name,
+            arguments: JSON.stringify(tc.arguments)
+          }
+        }))
+      })
     }
     if (content) {
       const last = this.messages[this.messages.length - 1]
