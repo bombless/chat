@@ -201,6 +201,11 @@ let isProcessing = false
 let abortController = null
 let streamingMessage = null
 
+dom.modelSelect.addEventListener('change', () => {
+    currentModel = dom.modelSelect.value
+    switchModel(currentModel)
+})
+
 function setStatus (text, type = 'idle') {
   dom.statusText.textContent = text
   dom.statusDot.className = 'dot'
