@@ -11,7 +11,8 @@ class Chat extends CoreChat {
       url: opts.url,
       modelsUrl: opts.modelsUrl,
       apiKey: opts.apiKey,
-      headers: opts.headers
+      headers: opts.headers,
+      api: opts.api
     })
     super({ ...opts, provider })
   }
