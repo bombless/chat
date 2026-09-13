@@ -11,7 +11,9 @@ function headersFor (apiKey, extraHeaders) {
 }
 
 function normalizeApi (api) {
-  return api === 'responses' ? 'responses' : 'chat_completions'
+  if (api === undefined || api === null) return 'chat_completions'
+  if (api === 'responses' || api === 'chat_completions') return api
+  throw new Error(`Unknown API type: ${api}`)
 }
 
 function responseTool (tool) {
@@ -116,14 +118,14 @@ class OpenAICompatibleProvider extends Provider {
             arguments: call.arguments || ''
           }
         } else if (json.type === 'response.function_call_arguments.delta') {
-          const key = json.item_id || json.output_index
+          const key = json.item_id ?? json.output_index
           if (!toolCalls[key]) {
             toolCalls[key] = { id: json.call_id || json.item_id || '', name: json.name || '', arguments: '' }
           }
           if (json.name) toolCalls[key].name = json.name
           toolCalls[key].arguments += json.delta || ''
         } else if (json.type === 'response.function_call_arguments.done') {
-          const key = json.item_id || json.output_index || json.call_id
+          const key = json.item_id ?? json.output_index ?? json.call_id
           const call = toolCalls[key] || {
             id: json.call_id || json.item_id || '',
             name: json.name || '',
