@@ -696,7 +696,6 @@ async function proxyStream (res, payload) {
 
 app.use(cors())
 app.use(express.json({ limit: '10mb' }))
-app.use(express.static('public'))
 app.get('/api/chat-tools', (req, res) => res.json({ tools: CHAT_TOOLS }))
 app.post('/api/config-transfer', (req, res) => {
   try {
@@ -959,7 +958,13 @@ app.get('/api/health', (req, res) =>
     workdir: workdirManager.current
   })
 )
-app.use(express.static(__dirname))
+function resolveTo(file) {
+  return (req, res) => res.sendFile(path.resolve(__dirname, 'public', file))
+}
+for (const u of ['tools-ui.js', 'workdir-ui.js', 'style.css']) {
+  app.get('/' + u, resolveTo(u))
+}
+app.get('/', resolveTo('index.html'))
 CONFIG.then(({port}) => {
 
   app.listen(port, '0.0.0.0', () => {
