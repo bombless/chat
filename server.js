@@ -961,7 +961,7 @@ app.get('/api/health', (req, res) =>
 function resolveTo(file) {
   return (req, res) => res.sendFile(path.resolve(__dirname, 'public', file))
 }
-for (const u of ['tools-ui.js', 'workdir-ui.js', 'style.css']) {
+for (const u of ['tools-ui.js', 'workdir-ui.js', 'style.css', 'script.js']) {
   app.get('/' + u, resolveTo(u))
 }
 app.get('/', resolveTo('index.html'))
