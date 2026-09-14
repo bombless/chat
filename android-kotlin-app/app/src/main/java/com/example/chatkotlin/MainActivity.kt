@@ -184,7 +184,22 @@ fun ChatApp(initialConfigs: List<ChatConfig>, initialActiveId: String, onConfigs
     var url by remember(active.id) { mutableStateOf(active.url) }; var modelsUrl by remember(active.id) { mutableStateOf(active.modelsUrl) }; var apiKey by remember(active.id) { mutableStateOf(active.apiKey) }; var model by remember(active.id) { mutableStateOf(active.model) }; var name by remember(active.id) { mutableStateOf(active.name) }
     fun persistCurrent() { val updated = active.copy(name = name.trim().ifBlank { active.name }, url = url, modelsUrl = modelsUrl, apiKey = apiKey, model = model); configs = configs.map { if (it.id == active.id) updated else it }; onConfigsChanged(configs, active.id) }
     fun switchConfig(config: ChatConfig) { persistCurrent(); activeId = config.id; onConfigsChanged(configs, config.id); messages = emptyList() }
-    fun applyManager(updated: List<ChatConfig>, selectedId: String) { persistCurrent(); configs = updated; activeId = selectedId; onConfigsChanged(updated, selectedId); messages = emptyList() }
+    fun applyManager(updated: List<ChatConfig>, selectedId: String) {
+        configs = updated
+        activeId = selectedId
+
+        val selected = updated.firstOrNull { it.id == selectedId }
+        if (selected != null) {
+            name = selected.name
+            url = selected.url
+            modelsUrl = selected.modelsUrl
+            apiKey = selected.apiKey
+            model = selected.model
+        }
+
+        onConfigsChanged(updated, selectedId)
+        messages = emptyList()
+    }
 
     LaunchedEffect(active.id, active.modelsUrl, active.apiKey) {
         models = emptyList(); modelError = null
