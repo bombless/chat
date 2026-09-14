@@ -226,7 +226,7 @@ fun ChatApp(initialConfigs: List<ChatConfig>, initialActiveId: String, onConfigs
                             Text(if (modelsLoading) "加载模型列表…" else model.ifBlank { "请选择模型" }, modifier = Modifier.weight(1f), maxLines = 1)
                             Text("▾")
                         }
-                        DropdownMenu(expanded = modelMenuExpanded, onDismissRequest = { modelMenuExpanded = false }, modifier = Modifier.fillMaxWidth(320.dp)) {
+                        DropdownMenu(expanded = modelMenuExpanded, onDismissRequest = { modelMenuExpanded = false }, modifier = Modifier.fillMaxWidth()) {
                             models.forEach { id -> DropdownMenuItem(text = { Text(id) }, onClick = { model = id; modelMenuExpanded = false }) }
                         }
                     }
