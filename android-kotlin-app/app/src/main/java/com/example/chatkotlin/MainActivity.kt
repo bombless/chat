@@ -22,7 +22,6 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.google.zxing.integration.android.IntentIntegrator
-import com.google.zxing.integration.android.IntentResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -180,18 +179,71 @@ fun ChatApp(initialConfigs: List<ChatConfig>, initialActiveId: String, onConfigs
     var configs by remember { mutableStateOf(initialConfigs) }; var activeId by remember { mutableStateOf(initialActiveId.ifBlank { initialConfigs.first().id }) }
     var messages by remember { mutableStateOf(listOf<Message>()) }; var input by remember { mutableStateOf("") }; var busy by remember { mutableStateOf(false) }
     var showKb by remember { mutableStateOf(false) }; var showConfigMenu by remember { mutableStateOf(false) }; var showConfigManager by remember { mutableStateOf(false) }
+    var models by remember { mutableStateOf(emptyList<String>()) }; var modelsLoading by remember { mutableStateOf(false) }; var modelMenuExpanded by remember { mutableStateOf(false) }; var modelError by remember { mutableStateOf<String?>(null) }
     val active = configs.firstOrNull { it.id == activeId } ?: configs.first()
     var url by remember(active.id) { mutableStateOf(active.url) }; var modelsUrl by remember(active.id) { mutableStateOf(active.modelsUrl) }; var apiKey by remember(active.id) { mutableStateOf(active.apiKey) }; var model by remember(active.id) { mutableStateOf(active.model) }; var name by remember(active.id) { mutableStateOf(active.name) }
     fun persistCurrent() { val updated = active.copy(name = name.trim().ifBlank { active.name }, url = url, modelsUrl = modelsUrl, apiKey = apiKey, model = model); configs = configs.map { if (it.id == active.id) updated else it }; onConfigsChanged(configs, active.id) }
-    fun switchConfig(config: ChatConfig) { persistCurrent(); activeId = config.id; onConfigsChanged(configs, config.id); messages = emptyList(); showConfigMenu = false }
-    fun applyManager(updated: List<ChatConfig>, selectedId: String) { persistCurrent(); configs = updated; activeId = selectedId; onConfigsChanged(updated, selectedId); messages = emptyList() }
+    fun switchConfig(config: ChatConfig) { persistCurrent(); activeId = config.id; onConfigsChanged(configs, config.id); messages = emptyList() }
+    fun applyManager(updated: List<ChatConfig>, selectedId: String) {
+        configs = updated
+        activeId = selectedId
+
+        val selected = updated.firstOrNull { it.id == selectedId }
+        if (selected != null) {
+            name = selected.name
+            url = selected.url
+            modelsUrl = selected.modelsUrl
+            apiKey = selected.apiKey
+            model = selected.model
+        }
+
+        onConfigsChanged(updated, selectedId)
+        messages = emptyList()
+    }
+
+    LaunchedEffect(active.id, active.modelsUrl, active.apiKey) {
+        models = emptyList(); modelError = null
+        if (active.modelsUrl.isBlank()) return@LaunchedEffect
+        modelsLoading = true
+        val result = fetchModels(active.modelsUrl, active.apiKey)
+        modelsLoading = false
+        result.fold(
+            onSuccess = { loaded ->
+                models = loaded
+                if (model.isBlank() && loaded.isNotEmpty()) model = loaded.first()
+            },
+            onFailure = { modelError = it.message ?: "加载模型列表失败" }
+        )
+    }
+
     MaterialTheme(colorScheme = lightColorScheme(primary = Color(0xFF2563EB), background = Color(0xFFF8FAFC))) {
-        Scaffold(topBar = { TopAppBar(title = { Box { TextButton(onClick = { showConfigMenu = true }, contentPadding = PaddingValues(0.dp)) { Text(active.name, style = MaterialTheme.typography.titleLarge); Text("  ▾") }; DropdownMenu(showConfigMenu, { showConfigMenu = false }) { configs.forEach { c -> DropdownMenuItem(text = { Text(if (c.id == active.id) "✓ ${c.name}" else c.name) }, onClick = { switchConfig(c) }) }; HorizontalDivider(); DropdownMenuItem(text = { Text("⚙ 管理配置") }, onClick = { showConfigMenu = false; showConfigManager = true }) } } }, actions = { TextButton(onClick = { showConfigManager = true }) { Text("设置") } }) }) { pad ->
+        Scaffold(topBar = { TopAppBar(title = { Box { TextButton(onClick = { showConfigMenu = true }, contentPadding = PaddingValues(0.dp)) { Text(active.name, style = MaterialTheme.typography.titleLarge); Text("  ▾") }; DropdownMenu(showConfigMenu, { showConfigMenu = false }) { configs.forEach { c -> DropdownMenuItem(text = { Text(if (c.id == active.id) "✓ ${c.name}" else c.name) }, onClick = { switchConfig(c); showConfigMenu = false }) }; HorizontalDivider(); DropdownMenuItem(text = { Text("⚙ 管理配置") }, onClick = { showConfigMenu = false; showConfigManager = true }) } } }, actions = { TextButton(onClick = { showConfigManager = true }) { Text("设置") } }) }) { pad ->
             Column(Modifier.fillMaxSize().padding(pad).padding(horizontal = 16.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) { Text("模型", style = MaterialTheme.typography.labelLarge); Spacer(Modifier.width(8.dp)); OutlinedTextField(model, { model = it }, Modifier.weight(1f), singleLine = true); Spacer(Modifier.width(8.dp)); Button(onClick = { showKb = !showKb }) { Text("📚 知识库") } }
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                    Text("模型", style = MaterialTheme.typography.labelLarge); Spacer(Modifier.width(8.dp))
+                    Box(Modifier.weight(1f)) {
+                        OutlinedButton(onClick = { if (models.isNotEmpty()) modelMenuExpanded = true }, enabled = !modelsLoading && models.isNotEmpty(), modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)) {
+                            Text(if (modelsLoading) "加载模型列表…" else model.ifBlank { "请选择模型" }, modifier = Modifier.weight(1f), maxLines = 1)
+                            Text("▾")
+                        }
+                        DropdownMenu(expanded = modelMenuExpanded, onDismissRequest = { modelMenuExpanded = false }, modifier = Modifier.fillMaxWidth()) {
+                            models.forEach { id -> DropdownMenuItem(text = { Text(id) }, onClick = { model = id; modelMenuExpanded = false }) }
+                        }
+                    }
+                    Spacer(Modifier.width(4.dp))
+                    IconButton(onClick = {
+                        scope.launch {
+                            modelsLoading = true; modelError = null
+                            fetchModels(active.modelsUrl, active.apiKey).fold({ models = it }, { modelError = it.message ?: "加载模型列表失败" })
+                            modelsLoading = false
+                        }
+                    }, enabled = !modelsLoading && active.modelsUrl.isNotBlank()) { Text("↻") }
+                    Spacer(Modifier.width(4.dp)); Button(onClick = { showKb = !showKb }) { Text("📚 知识库") }
+                }
+                modelError?.let { Text("模型列表加载失败：$it", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 if (showKb) Card(Modifier.fillMaxWidth().padding(bottom = 8.dp)) { Column(Modifier.padding(12.dp)) { Text("知识库", style = MaterialTheme.typography.titleMedium); Text("输入网址抓取内容，辅助对话", color = Color.Gray) } }
                 Box(Modifier.weight(1f).fillMaxWidth()) { if (messages.isEmpty()) Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) { Text("💬", style = MaterialTheme.typography.displayMedium); Text("开始对话吧", style = MaterialTheme.typography.titleLarge); Text("当前配置：${active.name}", color = Color.Gray) } else LazyColumn(state = list, modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(vertical = 8.dp)) { items(messages) { MessageBubble(it) } } }
-                Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.Bottom) { OutlinedTextField(input, { if (it.length <= 4000) input = it }, Modifier.weight(1f), placeholder = { Text("输入消息...") }, maxLines = 5); Spacer(Modifier.width(8.dp)); Button(enabled = input.isNotBlank() && !busy, onClick = { persistCurrent(); val text = input.trim(); input = ""; messages = messages + Message("user", text); busy = true; scope.launch { val reply = callChat(url, apiKey, model, messages); messages = messages + Message("assistant", reply); busy = false; list.animateScrollToItem(messages.lastIndex) } }) { Text(if (busy) "⏳" else "➤ 发送") } }
+                Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.Bottom) { OutlinedTextField(input, { if (it.length <= 4000) input = it }, Modifier.weight(1f), placeholder = { Text("输入消息...") }, maxLines = 5); Spacer(Modifier.width(8.dp)); Button(enabled = input.isNotBlank() && !busy && model.isNotBlank(), onClick = { persistCurrent(); val text = input.trim(); input = ""; messages = messages + Message("user", text); busy = true; scope.launch { val reply = callChat(url, apiKey, model, messages); messages = messages + Message("assistant", reply); busy = false; list.animateScrollToItem(messages.lastIndex) } }) { Text(if (busy) "⏳" else "➤ 发送") } }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { TextButton(onClick = { messages = emptyList() }) { Text("🗑️ 清屏") }; TextButton(onClick = { messages = emptyList() }) { Text("🔄 重置") } }
             }
         }
@@ -235,6 +287,22 @@ private fun ConfigEditorDialog(config: ChatConfig, onDismiss: () -> Unit, onSave
 @Composable
 private fun MessageBubble(m: Message) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (m.role == "user") Arrangement.End else Arrangement.Start) { Surface(color = if (m.role == "user") Color(0xFFDCEBFF) else Color.White, shape = RoundedCornerShape(14.dp), tonalElevation = 1.dp) { Text(m.content, Modifier.padding(12.dp)) } }
+}
+
+private suspend fun fetchModels(endpoint: String, key: String): Result<List<String>> = withContext(Dispatchers.IO) {
+    try {
+        val c = URL(endpoint).openConnection() as HttpURLConnection
+        c.requestMethod = "GET"; c.connectTimeout = 10000; c.readTimeout = 10000
+        if (key.isNotBlank()) c.setRequestProperty("Authorization", "Bearer $key")
+        val code = c.responseCode
+        val stream = if (code >= 400) c.errorStream else c.inputStream
+        val body = stream?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() } ?: "{}"
+        c.disconnect()
+        if (code !in 200..299) return@withContext Result.failure(Exception("HTTP $code"))
+        val data = JSONObject(body).optJSONArray("data") ?: JSONArray()
+        val ids = buildList { for (i in 0 until data.length()) data.optJSONObject(i)?.optString("id")?.takeIf { it.isNotBlank() }?.let(::add) }.distinct()
+        Result.success(ids)
+    } catch (e: Exception) { Result.failure(e) }
 }
 
 private suspend fun callChat(endpoint: String, key: String, model: String, history: List<Message>): String = withContext(Dispatchers.IO) {
