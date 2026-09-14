@@ -64,6 +64,17 @@
     button.onclick = async () => { await loadTools(); renderTools(); panel.classList.add('open'); };
     panel.querySelector('.tools-close').onclick = () => panel.classList.remove('open'); panel.addEventListener('click', (e) => { if (e.target === panel) panel.classList.remove('open'); }); renderTools();
   }
-  function boot() { createUI(); loadTools(); }
+  function installTransferCodeEnter() {
+    const input = document.getElementById('transferCode');
+    if (!input || input.dataset.enterHandlerInstalled === '1') return;
+    input.dataset.enterHandlerInstalled = '1';
+    input.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || e.isComposing) return;
+      e.preventDefault();
+      const confirmButton = document.getElementById('transferConfirm');
+      if (confirmButton && !confirmButton.disabled) confirmButton.click();
+    });
+  }
+  function boot() { createUI(); loadTools(); installTransferCodeEnter(); }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
 })();
