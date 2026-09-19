@@ -746,7 +746,75 @@ async function proxyStream (res, payload) {
 
 app.use(cors())
 app.use(express.json({ limit: '10mb' }))
+function requireConfigSameOrigin (req, res, next) {
+  const origin = String(req.headers.origin || '')
+  const host = String(req.headers.host || '')
+  if (!origin) return res.status(403).json({ error: '配置接口只允许通过网页访问' })
+  try {
+    const originUrl = new URL(origin)
+    if (originUrl.host !== host) return res.status(403).json({ error: '跨站配置请求已拒绝' })
+  } catch (_) {
+    return res.status(403).json({ error: '无效的 Origin' })
+  }
+  next()
+}
+
 app.get('/api/chat-tools', (req, res) => res.json({ tools: CHAT_TOOLS }))
+app.get('/api/keytar-config', requireConfigSameOrigin, async (req, res) => {
+  try {
+    const c = await CONFIG
+    res.json({
+      url: c.url || '',
+      model: c.model || '',
+      models_url: c.models_url || '',
+      keyConfigured: Boolean(c.key)
+    })
+  } catch (e) {
+    res.status(500).json({ error: e.message || String(e) })
+  }
+})
+
+app.put('/api/keytar-config', requireConfigSameOrigin, async (req, res) => {
+  try {
+    const body = req.body || {}
+    const updates = {}
+    const fields = ['URL', 'KEY', 'MODEL', 'MODELS_URL']
+    const limits = { URL: 2048, KEY: 4096, MODEL: 512, MODELS_URL: 2048 }
+
+    for (const field of fields) {
+      if (!Object.prototype.hasOwnProperty.call(body, field)) continue
+      if (typeof body[field] !== 'string') return res.status(400).json({ error: field + ' 必须是字符串' })
+      if (body[field].length > limits[field]) return res.status(400).json({ error: field + ' 太长' })
+      if (field !== 'KEY' && !body[field].trim()) return res.status(400).json({ error: field + ' 不能为空' })
+      updates[field] = body[field]
+    }
+
+    if (!Object.keys(updates).length)
+      return res.status(400).json({ error: '没有需要更新的配置' })
+
+    for (const [field, value] of Object.entries(updates))
+      await keytar.setPassword(__dirname, field, value)
+
+    const c = await CONFIG
+    if (Object.prototype.hasOwnProperty.call(updates, 'URL')) c.url = updates.URL
+    if (Object.prototype.hasOwnProperty.call(updates, 'KEY')) c.key = updates.KEY
+    if (Object.prototype.hasOwnProperty.call(updates, 'MODEL')) c.model = updates.MODEL
+    if (Object.prototype.hasOwnProperty.call(updates, 'MODELS_URL')) c.models_url = updates.MODELS_URL
+
+    res.json({
+      ok: true,
+      updated: Object.keys(updates),
+      url: c.url || '',
+      model: c.model || '',
+      models_url: c.models_url || '',
+      keyConfigured: Boolean(c.key)
+    })
+  } catch (e) {
+    console.error('更新 keytar 配置失败:', e)
+    res.status(500).json({ error: e.message || String(e) })
+  }
+})
+
 app.post('/api/config-transfer', (req, res) => {
   try {
     const session = newTransferSession()
