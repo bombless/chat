@@ -257,7 +257,8 @@ function decodeEntities (str) {
 }
 async function fetchWithBrowser (url) {
   const b = await getBrowser()
-  const page = await b.newPage({ userAgent: CONFIG.fetchUserAgent })
+  const config = await CONFIG
+  const page = await b.newPage({ userAgent: config.fetchUserAgent })
   try {
     await page.addInitScript(() => {
       try {
@@ -989,7 +990,8 @@ app.get('/api/health', (req, res) =>
     status: 'ok',
     timestamp: new Date().toISOString(),
     kbCount: knowledgeBase.length,
-    workdir: workdirManager.current
+    workdir: workdirManager.current,
+    socks5hProxy: Boolean(NORMALIZED_SOCKS5H_PROXY)
   })
 )
 function resolveTo(file) {
@@ -1007,6 +1009,7 @@ CONFIG.then(({port}) => {
     console.log(`📋 模型接口: http://localhost:${port}/api/models`)
     console.log(`📚 知识库条目: ${knowledgeBase.length}`)
     console.log(`🔎 当前工作目录: ${workdirManager.current}`)
+    console.log(`🧦 SOCKS5h 代理: ${NORMALIZED_SOCKS5H_PROXY ? '已启用' : '未启用'}`)
   })
 })
 process.on('SIGINT', () => {
