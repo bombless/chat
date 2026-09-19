@@ -469,6 +469,8 @@ async function runProjectTool (name, args = {}, root) {
         '!node_modules/**',
         '--glob',
         '!kb.json',
+          '--glob',
+          '!kb.alasql.json',
         rel
       ],
       { cwd: root, maxBuffer: 2 * 1024 * 1024 }
@@ -507,6 +509,8 @@ async function runProjectTool (name, args = {}, root) {
           '!node_modules/**',
           '--glob',
           '!kb.json',
+          '--glob',
+          '!kb.alasql.json',
           query,
           rel
         ],
