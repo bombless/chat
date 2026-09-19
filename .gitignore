@@ -1,6 +1,7 @@
 /env.*
 /node_modules/
 /kb.json
+/kb.alasql.json
 /.workdirs.json
 /android-app/build
 /android-app/.gradle

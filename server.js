@@ -8,6 +8,7 @@ const crypto = require('crypto')
 const os = require('os')
 const { execFile } = require('child_process')
 const { WorkdirManager } = require('./workdir-manager')
+const { KnowledgeBaseStore } = require('./kb-store')
 const keytar = require('keytar')
 const axios = require('axios')
 const { SocksProxyAgent } = require('socks-proxy-agent')
@@ -109,7 +110,6 @@ const CONFIG = Promise.all([
       llm_socks5h_proxy: NORMALIZED_LLM_SOCKS5H_PROXY,
       crawler_socks5h_proxy: NORMALIZED_CRAWLER_SOCKS5H_PROXY,
       port: 3000,
-      kbFile: path.resolve(__dirname, 'kb.json'),
       useHeadless: true,
       fetchUserAgent:
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
@@ -369,27 +369,14 @@ async function summarize (title, text) {
   const data = resp.data
   return data?.choices?.[0]?.message?.content || '(摘要生成失败)'
 }
-let knowledgeBase = []
-try {
-  CONFIG.then(({kbFile}) => {
-    if (fs.existsSync(kbFile))
-      knowledgeBase = JSON.parse(fs.readFileSync(kbFile, 'utf8'))
-  })
-} catch (e) {
-  console.error('读取知识库失败:', e.message)
-}
-let config = {}
-CONFIG.then(c => Object.assign(config, c))
-function saveKB () {
-  try {
-    fs.writeFileSync(CONFIG.kbFile, JSON.stringify(knowledgeBase, null, 2))
-  } catch (e) {
-    console.error('保存知识库失败:', e.message)
-  }
-}
+const knowledgeBaseStore = new KnowledgeBaseStore({
+  file: path.resolve(__dirname, 'kb.alasql.json'),
+  legacyFile: path.resolve(__dirname, 'kb.json')
+})
+
 function extractKeywords (query) {
   const keywords = new Set()
-  ;(query.match(/[A-Za-z0-9][A-Za-z0-9\/\.\-]*/g) || []).forEach(t => {
+  ;(query.match(/[A-Za-z0-9][A-Za-z0-9\\/\\.\\-]*/g) || []).forEach(t => {
     if (t.length >= 1) keywords.add(t)
   })
   const stop =
@@ -406,16 +393,16 @@ function extractKeywords (query) {
 }
 function searchKB (query) {
   const keywords = extractKeywords(query).map(k => k.toLowerCase())
-  return knowledgeBase
+  return knowledgeBaseStore
+    .searchRows()
     .map(entry => {
       const title = String(entry.title || '').toLowerCase()
-      const hay = `${entry.title || ''} ${entry.summary || ''} ${
-        entry.text || ''
-      }`.toLowerCase()
+      const hay = (entry.title || '') + ' ' + (entry.summary || '') + ' ' + (entry.text || '')
+      const hayLower = hay.toLowerCase()
       let score = 0
       const hits = []
       for (const k of keywords)
-        if (hay.includes(k)) {
+        if (hayLower.includes(k)) {
           score += 1
           if (title.includes(k)) score += 3
           hits.push(k)
@@ -482,6 +469,8 @@ async function runProjectTool (name, args = {}, root) {
         '!node_modules/**',
         '--glob',
         '!kb.json',
+          '--glob',
+          '!kb.alasql.json',
         rel
       ],
       { cwd: root, maxBuffer: 2 * 1024 * 1024 }
@@ -520,6 +509,8 @@ async function runProjectTool (name, args = {}, root) {
           '!node_modules/**',
           '--glob',
           '!kb.json',
+          '--glob',
+          '!kb.alasql.json',
           query,
           rel
         ],
@@ -954,8 +945,7 @@ app.post('/api/fetch-url', async (req, res) => {
       text,
       createdAt: new Date().toISOString()
     }
-    knowledgeBase.push(entry)
-    saveKB()
+    knowledgeBaseStore.insert(entry)
     res.json({ id: entry.id, title, url, summary, length: text.length })
   } catch (error) {
     console.error('抓取失败:', error)
@@ -974,8 +964,8 @@ app.post('/api/kb-search', (req, res) => {
 })
 app.get('/api/kb', (req, res) =>
   res.json({
-    count: knowledgeBase.length,
-    items: knowledgeBase.map(({ id, title, url, summary, createdAt }) => ({
+    count: knowledgeBaseStore.count(),
+    items: knowledgeBaseStore.list().map(({ id, title, url, summary, createdAt }) => ({
       id,
       title,
       url,
@@ -985,10 +975,8 @@ app.get('/api/kb', (req, res) =>
   })
 )
 app.delete('/api/kb/:id', (req, res) => {
-  const before = knowledgeBase.length
-  knowledgeBase = knowledgeBase.filter(entry => entry.id !== req.params.id)
-  if (knowledgeBase.length !== before) saveKB()
-  res.json({ ok: true, count: knowledgeBase.length })
+  knowledgeBaseStore.delete(req.params.id)
+  res.json({ ok: true, count: knowledgeBaseStore.count() })
 })
 app.get('/api/project', (req, res) =>
   res.json({
@@ -1001,7 +989,7 @@ app.get('/api/health', (req, res) =>
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
-    kbCount: knowledgeBase.length,
+    kbCount: knowledgeBaseStore.count(),
     workdir: workdirManager.current,
     llmSocks5hProxy: Boolean(NORMALIZED_LLM_SOCKS5H_PROXY),
     crawlerSocks5hProxy: Boolean(NORMALIZED_CRAWLER_SOCKS5H_PROXY)
@@ -1020,7 +1008,7 @@ CONFIG.then(({port}) => {
     console.log(`🚀 代理服务已启动: http://localhost:${port}`)
     console.log(`📡 聊天接口: http://localhost:${port}/api/chat`)
     console.log(`📋 模型接口: http://localhost:${port}/api/models`)
-    console.log(`📚 知识库条目: ${knowledgeBase.length}`)
+    console.log(`📚 知识库条目: ${knowledgeBaseStore.count()}`)
     console.log(`🔎 当前工作目录: ${workdirManager.current}`)
     console.log(`🧠 LLM SOCKS5h 代理: ${NORMALIZED_LLM_SOCKS5H_PROXY ? '已启用' : '未启用'}`)
     console.log(`📚 抓取 SOCKS5h 代理: ${NORMALIZED_CRAWLER_SOCKS5H_PROXY ? '已启用' : '未启用'}`)
