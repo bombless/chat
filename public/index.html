@@ -27,6 +27,7 @@
             <div class="header-actions">
                 <button class="btn btn-warning" id="btnKb" title="打开知识库面板">📚 <span>知识库</span></button>
                 <button class="btn btn-warning" id="btnConfigExport" title="导出 Provider 配置">📤 <span>导出配置</span></button>
+                <button class="btn btn-warning" id="btnKeytarConfig" title="编辑 Keytar 配置">⚙️ <span>配置</span></button>
                 <button class="btn btn-warning" id="btnModels" title="刷新模型列表">📋 <span>模型</span></button>
                 <button class="btn btn-danger" id="btnReset">🔄 <span>重置</span></button>
                 <button class="btn btn-success" id="btnClear">🗑️ <span>清屏</span></button>
@@ -43,6 +44,28 @@
             <div class="kb-list" id="kbList"></div>
         </div>
 
+
+        <div class="config-modal" id="configModal">
+            <div class="config-card">
+                <div class="config-head">
+                    <div>
+                        <h3>⚙️ 服务配置</h3>
+                        <div class="config-muted">直接更新本机 keytar 中的 URL / KEY / MODEL / MODELS_URL</div>
+                    </div>
+                    <button class="btn config-close" id="configClose" type="button">关闭</button>
+                </div>
+                <div class="config-warning">KEY 不会从服务端回显。留空表示保持现有 KEY 不变。</div>
+                <label class="config-field"><span>URL</span><input id="configUrl" type="url" autocomplete="off" placeholder="https://..." /></label>
+                <label class="config-field"><span>KEY</span><input id="configKey" type="password" autocomplete="new-password" placeholder="留空保持不变" /></label>
+                <label class="config-field"><span>MODEL</span><input id="configModel" type="text" autocomplete="off" /></label>
+                <label class="config-field"><span>MODELS_URL</span><input id="configModelsUrl" type="url" autocomplete="off" placeholder="https://..." /></label>
+                <div class="config-status" id="configStatus"></div>
+                <div class="config-actions">
+                    <button class="btn" id="configReload" type="button">重新读取</button>
+                    <button class="btn btn-success" id="configSave" type="button">保存到 keytar</button>
+                </div>
+            </div>
+        </div>
         <div class="transfer-modal" id="transferModal">
             <div class="transfer-card">
                 <h3>📤 导出配置</h3>
