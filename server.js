@@ -14,26 +14,37 @@ const { SocksProxyAgent } = require('socks-proxy-agent')
 const QRCode = require('qrcode')
 const CONFIG_TRANSFER_TTL = 5 * 60 * 1000
 const CONFIG_TRANSFER_MAX_ATTEMPTS = 5
-const SOCKS5H_PROXY = process.env.SOCKS5H_PROXY || process.env.SOCKS5H_PROXY_URL || ''
-function normalizeSocks5hProxy (value) {
+const LLM_SOCKS5H_PROXY = process.env.LLM_SOCKS5H_PROXY || process.env.LLM_SOCKS5H_PROXY_URL || ''
+const CRAWLER_SOCKS5H_PROXY = process.env.CRAWLER_SOCKS5H_PROXY || process.env.CRAWLER_SOCKS5H_PROXY_URL || ''
+function normalizeSocks5hProxy (value, name) {
   const raw = String(value || '').trim()
   if (!raw) return ''
   if (/^socks5h:\/\//i.test(raw)) return raw
   if (/^socks5:\/\//i.test(raw)) return raw.replace(/^socks5:/i, 'socks5h:')
   if (/^socks:\/\//i.test(raw)) return raw.replace(/^socks:/i, 'socks5h:')
-  throw new Error('SOCKS5H_PROXY 必须是 socks5h://、socks5:// 或 socks:// URL')
+  throw new Error(`${name} 必须是 socks5h://、socks5:// 或 socks:// URL`)
 }
-const NORMALIZED_SOCKS5H_PROXY = normalizeSocks5hProxy(SOCKS5H_PROXY)
-const outboundProxyAgent = NORMALIZED_SOCKS5H_PROXY
-  ? new SocksProxyAgent(NORMALIZED_SOCKS5H_PROXY)
+const NORMALIZED_LLM_SOCKS5H_PROXY = normalizeSocks5hProxy(LLM_SOCKS5H_PROXY, 'LLM_SOCKS5H_PROXY')
+const NORMALIZED_CRAWLER_SOCKS5H_PROXY = normalizeSocks5hProxy(CRAWLER_SOCKS5H_PROXY, 'CRAWLER_SOCKS5H_PROXY')
+const llmProxyAgent = NORMALIZED_LLM_SOCKS5H_PROXY
+  ? new SocksProxyAgent(NORMALIZED_LLM_SOCKS5H_PROXY)
   : null
-function axiosOptions (headers = {}) {
+const crawlerProxyAgent = NORMALIZED_CRAWLER_SOCKS5H_PROXY
+  ? new SocksProxyAgent(NORMALIZED_CRAWLER_SOCKS5H_PROXY)
+  : null
+function axiosOptions (headers = {}, agent = null) {
   return {
     headers,
-    ...(outboundProxyAgent
-      ? { httpAgent: outboundProxyAgent, httpsAgent: outboundProxyAgent, proxy: false }
+    ...(agent
+      ? { httpAgent: agent, httpsAgent: agent, proxy: false }
       : {})
   }
+}
+function llmAxiosOptions (headers = {}) {
+  return axiosOptions(headers, llmProxyAgent)
+}
+function crawlerAxiosOptions (headers = {}) {
+  return axiosOptions(headers, crawlerProxyAgent)
 }
 const configTransfers = new Map()
 function getLanIPv4 () {
@@ -95,7 +106,8 @@ const CONFIG = Promise.all([
       key: KEY,
       model: MODEL,
       models_url: MODELS_URL,
-      socks5h_proxy: NORMALIZED_SOCKS5H_PROXY,
+      llm_socks5h_proxy: NORMALIZED_LLM_SOCKS5H_PROXY,
+      crawler_socks5h_proxy: NORMALIZED_CRAWLER_SOCKS5H_PROXY,
       port: 3000,
       kbFile: path.resolve(__dirname, 'kb.json'),
       useHeadless: true,
@@ -213,7 +225,7 @@ async function getBrowser () {
       '--disable-dev-shm-usage',
       '--disable-blink-features=AutomationControlled'
     ]
-    const browserProxy = config.socks5h_proxy
+    const browserProxy = config.crawler_socks5h_proxy
       ? (() => {
           try {
             const proxy = new URL(config.socks5h_proxy)
@@ -285,7 +297,7 @@ async function fetchAndExtract (url) {
   const config = await CONFIG;
   try {
     const resp = await axios.get(url, {
-      ...axiosOptions({
+      ...crawlerAxiosOptions({
         'User-Agent': config.fetchUserAgent,
         Accept:
           'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -345,7 +357,7 @@ async function summarize (title, text) {
       ],
       stream: false
     },
-    axiosOptions({
+    llmAxiosOptions({
       'Content-Type': 'application/json',
       Authorization: `Bearer ${config.key}`
     })
@@ -674,7 +686,7 @@ async function proxyStream (res, payload) {
       config.url,
       { ...requestPayload, stream: true },
       {
-        ...axiosOptions({
+        ...llmAxiosOptions({
           'Content-Type': 'application/json',
           Authorization: `Bearer ${config.key}`
         }),
@@ -863,7 +875,7 @@ app.post('/api/chat', async (req, res) => {
           tools: withServerTools(tools),
           stream: false
         },
-        axiosOptions({
+        llmAxiosOptions({
           'Content-Type': 'application/json',
           Authorization: `Bearer ${config.key}`
         })
@@ -909,7 +921,7 @@ app.get('/api/models', async (req, res) => {
       }?capabilities=${capabilities}&page_size=${page_size}&name=${encodeURIComponent(
         name
       )}`,
-      axiosOptions({
+      llmAxiosOptions({
         'Content-Type': 'application/json',
         Authorization: `Bearer ${config.key}`
       })
@@ -991,7 +1003,8 @@ app.get('/api/health', (req, res) =>
     timestamp: new Date().toISOString(),
     kbCount: knowledgeBase.length,
     workdir: workdirManager.current,
-    socks5hProxy: Boolean(NORMALIZED_SOCKS5H_PROXY)
+    llmSocks5hProxy: Boolean(NORMALIZED_LLM_SOCKS5H_PROXY),
+    crawlerSocks5hProxy: Boolean(NORMALIZED_CRAWLER_SOCKS5H_PROXY)
   })
 )
 function resolveTo(file) {
@@ -1009,7 +1022,8 @@ CONFIG.then(({port}) => {
     console.log(`📋 模型接口: http://localhost:${port}/api/models`)
     console.log(`📚 知识库条目: ${knowledgeBase.length}`)
     console.log(`🔎 当前工作目录: ${workdirManager.current}`)
-    console.log(`🧦 SOCKS5h 代理: ${NORMALIZED_SOCKS5H_PROXY ? '已启用' : '未启用'}`)
+    console.log(`🧠 LLM SOCKS5h 代理: ${NORMALIZED_LLM_SOCKS5H_PROXY ? '已启用' : '未启用'}`)
+    console.log(`📚 抓取 SOCKS5h 代理: ${NORMALIZED_CRAWLER_SOCKS5H_PROXY ? '已启用' : '未启用'}`)
   })
 })
 process.on('SIGINT', () => {
