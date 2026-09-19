@@ -9,9 +9,32 @@ const os = require('os')
 const { execFile } = require('child_process')
 const { WorkdirManager } = require('./workdir-manager')
 const keytar = require('keytar')
+const axios = require('axios')
+const { SocksProxyAgent } = require('socks-proxy-agent')
 const QRCode = require('qrcode')
 const CONFIG_TRANSFER_TTL = 5 * 60 * 1000
 const CONFIG_TRANSFER_MAX_ATTEMPTS = 5
+const SOCKS5H_PROXY = process.env.SOCKS5H_PROXY || process.env.SOCKS5H_PROXY_URL || ''
+function normalizeSocks5hProxy (value) {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  if (/^socks5h:\/\//i.test(raw)) return raw
+  if (/^socks5:\/\//i.test(raw)) return raw.replace(/^socks5:/i, 'socks5h:')
+  if (/^socks:\/\//i.test(raw)) return raw.replace(/^socks:/i, 'socks5h:')
+  throw new Error('SOCKS5H_PROXY 必须是 socks5h://、socks5:// 或 socks:// URL')
+}
+const NORMALIZED_SOCKS5H_PROXY = normalizeSocks5hProxy(SOCKS5H_PROXY)
+const outboundProxyAgent = NORMALIZED_SOCKS5H_PROXY
+  ? new SocksProxyAgent(NORMALIZED_SOCKS5H_PROXY)
+  : null
+function axiosOptions (headers = {}) {
+  return {
+    headers,
+    ...(outboundProxyAgent
+      ? { httpAgent: outboundProxyAgent, httpsAgent: outboundProxyAgent, proxy: false }
+      : {})
+  }
+}
 const configTransfers = new Map()
 function getLanIPv4 () {
   const candidates = []
@@ -72,6 +95,7 @@ const CONFIG = Promise.all([
       key: KEY,
       model: MODEL,
       models_url: MODELS_URL,
+      socks5h_proxy: NORMALIZED_SOCKS5H_PROXY,
       port: 3000,
       kbFile: path.resolve(__dirname, 'kb.json'),
       useHeadless: true,
@@ -182,20 +206,36 @@ let browser = null
 async function getBrowser () {
   if (!browser) {
     const { chromium } = require('playwright')
+    const config = await CONFIG
     const args = [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-blink-features=AutomationControlled'
     ]
+    const browserProxy = config.socks5h_proxy
+      ? (() => {
+          try {
+            const proxy = new URL(config.socks5h_proxy)
+            if (proxy.username || proxy.password) {
+              console.warn('SOCKS5h 已配置认证信息；Playwright 浏览器回退不使用该代理，因为 Chromium 不支持 SOCKS5 认证。')
+              return undefined
+            }
+            return { server: config.socks5h_proxy.replace(/^socks5h:/i, 'socks5:') }
+          } catch (_) {
+            return undefined
+          }
+        })()
+      : undefined
+    const launchOptions = { args, ...(browserProxy ? { proxy: browserProxy } : {}) }
     try {
-      browser = await chromium.launch({ channel: 'msedge', args })
+      browser = await chromium.launch({ channel: 'msedge', ...launchOptions })
     } catch (e) {
       console.error(
         '使用本机 Edge 失败，回退到 Playwright 自带 Chromium:',
         e.message
       )
-      browser = await chromium.launch({ args })
+      browser = await chromium.launch(launchOptions)
     }
   }
   return browser
@@ -243,16 +283,19 @@ async function fetchAndExtract (url) {
   let html = null
   const config = await CONFIG;
   try {
-    const resp = await fetch(url, {
-      headers: {
+    const resp = await axios.get(url, {
+      ...axiosOptions({
         'User-Agent': config.fetchUserAgent,
         Accept:
           'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
-      },
-      redirect: 'follow'
+      }),
+      maxRedirects: 10,
+      responseType: 'text',
+      validateStatus: () => true
     })
-    html = await resp.text()
+    if (resp.status >= 400) throw new Error(`HTTP ${resp.status}`)
+    html = resp.data
   } catch (e) {
     console.error('普通抓取失败，准备回退无头浏览器:', e.message)
   }
@@ -286,13 +329,9 @@ async function fetchAndExtract (url) {
 }
 async function summarize (title, text) {
   const config = await CONFIG;
-  const resp = await fetch(config.url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${config.key}`
-    },
-    body: JSON.stringify({
+  const resp = await axios.post(
+    config.url,
+    {
       model: config.model,
       messages: [
         {
@@ -304,13 +343,17 @@ async function summarize (title, text) {
         }
       ],
       stream: false
+    },
+    axiosOptions({
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${config.key}`
     })
-  })
-  if (!resp.ok)
+  )
+  if (resp.status < 200 || resp.status >= 300)
     throw new Error(
-      '摘要生成失败: ' + resp.status + ' ' + (await resp.text().catch(() => ''))
+      '摘要生成失败: ' + resp.status + ' ' + JSON.stringify(resp.data || '')
     )
-  const data = await resp.json()
+  const data = resp.data
   return data?.choices?.[0]?.message?.content || '(摘要生成失败)'
 }
 let knowledgeBase = []
@@ -581,15 +624,9 @@ async function runServerTool (name, args, root) {
   throw new Error('未知服务端工具: ' + name)
 }
 async function readUpstreamStream (response) {
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
   let raw = ''
-  while (true) {
-    const { value, done } = await reader.read()
-    if (done) break
-    raw += decoder.decode(value, { stream: true })
-  }
-  return raw + decoder.decode()
+  for await (const chunk of response.data) raw += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk)
+  return raw
 }
 function parseToolCallsFromSSE (raw) {
   const acc = {}
@@ -632,21 +669,21 @@ async function proxyStream (res, payload) {
   const config = await CONFIG;
   const requestPayload = { ...payload, tools: withServerTools(payload.tools) }
   for (let round = 0; round < 8; round++) {
-    const response = await fetch(config.url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${config.key}`
-      },
-      body: JSON.stringify({ ...requestPayload, stream: true })
-    })
-    if (!response.ok || !response.body)
-      throw new Error(
-        `上游模型请求失败 ${response.status}: ${await response
-          .text()
-          .catch(() => '')}`
-      )
+    const response = await axios.post(
+      config.url,
+      { ...requestPayload, stream: true },
+      {
+        ...axiosOptions({
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${config.key}`
+        }),
+        responseType: 'stream',
+        validateStatus: () => true
+      }
+    )
     const raw = await readUpstreamStream(response)
+    if (response.status < 200 || response.status >= 300)
+      throw new Error(`上游模型请求失败 ${response.status}: ${raw}`)
     const parsed = parseToolCallsFromSSE(raw)
     const serverOnly =
       parsed.calls.length > 0 &&
@@ -817,21 +854,20 @@ app.post('/api/chat', async (req, res) => {
   try {
     const { messages, model, tools, stream = true } = req.body
     if (!stream) {
-      const response = await fetch(config.url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${config.key}`
-        },
-        body: JSON.stringify({
+      const response = await axios.post(
+        config.url,
+        {
           model: model || config.model,
           messages,
           tools: withServerTools(tools),
           stream: false
+        },
+        axiosOptions({
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${config.key}`
         })
-      })
-      const data = await response.json()
-      res.status(response.status).json(data)
+      )
+      res.status(response.status).json(response.data)
       return
     }
     await proxyStream(res, {
@@ -866,20 +902,18 @@ app.get('/api/models', async (req, res) => {
   const config = await CONFIG;
   try {
     const { name = '', capabilities = 'TG', page_size = 99 } = req.query
-    const response = await fetch(
+    const response = await axios.get(
       `${
         config.models_url
       }?capabilities=${capabilities}&page_size=${page_size}&name=${encodeURIComponent(
         name
       )}`,
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${config.key}`
-        }
-      }
+      axiosOptions({
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${config.key}`
+      })
     )
-    const data = await response.json()
+    const data = response.data
     console.log(data)
     res
       .status(response.status)
