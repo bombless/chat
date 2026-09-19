@@ -182,6 +182,16 @@ const dom = {
   kbList: document.getElementById('kbList'),
   kbStatus: document.getElementById('kbStatus'),
   btnConfigExport: document.getElementById('btnConfigExport'),
+  btnKeytarConfig: document.getElementById('btnKeytarConfig'),
+  configModal: document.getElementById('configModal'),
+  configClose: document.getElementById('configClose'),
+  configReload: document.getElementById('configReload'),
+  configSave: document.getElementById('configSave'),
+  configUrl: document.getElementById('configUrl'),
+  configKey: document.getElementById('configKey'),
+  configModel: document.getElementById('configModel'),
+  configModelsUrl: document.getElementById('configModelsUrl'),
+  configStatus: document.getElementById('configStatus'),
   transferModal: document.getElementById('transferModal'),
   transferCreating: document.getElementById('transferCreating'),
   transferWaiting: document.getElementById('transferWaiting'),
@@ -212,6 +222,72 @@ function setStatus (text, type = 'idle') {
   if (type === 'active') dom.statusDot.classList.add('active')
   if (type === 'error') dom.statusDot.classList.add('error')
 }
+
+function setConfigStatus (text, type = '') {
+  dom.configStatus.textContent = text
+  dom.configStatus.className = 'config-status' + (type ? ' ' + type : '')
+}
+
+function closeKeytarConfig () {
+  dom.configModal.classList.remove('open')
+}
+
+async function loadKeytarConfig () {
+  setConfigStatus('读取中...')
+  try {
+    const resp = await fetch('/api/keytar-config')
+    const data = await resp.json()
+    if (!resp.ok) throw new Error(data.error || resp.status)
+    dom.configUrl.value = data.url || ''
+    dom.configKey.value = ''
+    dom.configKey.placeholder = data.keyConfigured
+      ? '已配置，留空保持不变'
+      : '尚未配置'
+    dom.configModel.value = data.model || ''
+    dom.configModelsUrl.value = data.models_url || ''
+    setConfigStatus(data.keyConfigured ? 'KEY 已配置（服务端不会回显）' : 'KEY 尚未配置')
+  } catch (e) {
+    setConfigStatus('读取失败: ' + e.message, 'error')
+  }
+}
+
+async function openKeytarConfig () {
+  dom.configModal.classList.add('open')
+  await loadKeytarConfig()
+}
+
+async function saveKeytarConfig () {
+  dom.configSave.disabled = true
+  setConfigStatus('保存中...')
+  try {
+    const body = {
+      URL: dom.configUrl.value.trim(),
+      MODEL: dom.configModel.value.trim(),
+      MODELS_URL: dom.configModelsUrl.value.trim()
+    }
+    const key = dom.configKey.value
+    if (key) body.KEY = key
+    const resp = await fetch('/api/keytar-config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+    const data = await resp.json()
+    if (!resp.ok) throw new Error(data.error || resp.status)
+    dom.configKey.value = ''
+    dom.configKey.placeholder = data.keyConfigured
+      ? '已配置，留空保持不变'
+      : '尚未配置'
+    setConfigStatus('已保存到 keytar。新请求立即使用新配置；当前页面的模型列表可点击“模型”刷新。', 'success')
+    currentModel = data.model || currentModel
+    if (currentModel) switchModel(currentModel)
+  } catch (e) {
+    setConfigStatus('保存失败: ' + e.message, 'error')
+  } finally {
+    dom.configSave.disabled = false
+  }
+}
+
 function addMessage (role, content, extra = {}) {
   const empty = dom.messages.querySelector('.empty-state')
   if (empty) empty.remove()
@@ -716,6 +792,14 @@ async function confirmConfigTransfer () {
 }
 dom.sendBtn.onclick = sendMessage
 if (dom.btnConfigExport) dom.btnConfigExport.onclick = startConfigTransfer
+
+if (dom.btnKeytarConfig) dom.btnKeytarConfig.onclick = openKeytarConfig
+if (dom.configClose) dom.configClose.onclick = closeKeytarConfig
+if (dom.configReload) dom.configReload.onclick = loadKeytarConfig
+if (dom.configSave) dom.configSave.onclick = saveKeytarConfig
+if (dom.configModal) dom.configModal.addEventListener('click', e => {
+  if (e.target === dom.configModal) closeKeytarConfig()
+})
 dom.transferConfirm.onclick = confirmConfigTransfer
 dom.transferCancel.onclick = async () => {
   if (transferToken)
