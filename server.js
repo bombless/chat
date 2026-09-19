@@ -228,12 +228,12 @@ async function getBrowser () {
     const browserProxy = config.crawler_socks5h_proxy
       ? (() => {
           try {
-            const proxy = new URL(config.socks5h_proxy)
+            const proxy = new URL(config.crawler_socks5h_proxy)
             if (proxy.username || proxy.password) {
               console.warn('SOCKS5h 已配置认证信息；Playwright 浏览器回退不使用该代理，因为 Chromium 不支持 SOCKS5 认证。')
               return undefined
             }
-            return { server: config.socks5h_proxy.replace(/^socks5h:/i, 'socks5:') }
+            return { server: config.crawler_socks5h_proxy.replace(/^socks5h:/i, 'socks5:') }
           } catch (_) {
             return undefined
           }
