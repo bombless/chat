@@ -383,8 +383,8 @@ function extractKeywords (query) {
     /(和|与|及|以及|并且|分别|各自|各|多|重|重量|轻|是|在|的|了|吗|呢|怎么|如何|什么|哪|请|告诉|我|我们|关于|对比|比较|区别|有|没有|多少|几|参数|信息|资料|相关|内容|介绍|一下|这个|那个|一种|把|将|查询|搜|知识库|知道|能否|是否|还是|或者|比如|例如|因为|所以)/g
   query
     .replace(stop, ' ')
-    .replace(/[^\\u4e00-\\u9fffA-Za-z0-9]+/g, ' ')
-    .split(/\\s+/)
+    .replace(/[^\u4e00-\u9fffA-Za-z0-9]+/g, ' ')
+    .split(/\s+/)
     .forEach(w => {
       if (w.length >= 2) keywords.add(w)
     })
