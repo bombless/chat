@@ -9,7 +9,7 @@ class KnowledgeBaseStore {
     this.file = path.resolve(file)
     this.legacyFile = legacyFile ? path.resolve(legacyFile) : null
 
-    alasql('CREATE TABLE IF NOT EXISTS ' + TABLE + ' (id STRING, url STRING, title STRING, summary STRING, text STRING, createdAt STRING)')
+    if (!alasql.tables[TABLE]) alasql('CREATE TABLE ' + TABLE + ' (id STRING, url STRING, title STRING, summary STRING, text STRING, createdAt STRING)')
     this._load()
   }
 
@@ -22,8 +22,7 @@ class KnowledgeBaseStore {
       if (rows.length) this._write(rows)
     }
 
-    alasql('DELETE FROM ' + TABLE)
-    if (rows.length) alasql('INSERT INTO ' + TABLE + ' VALUES ?', [rows])
+    alasql.tables[TABLE].data = rows
   }
 
   _readJson (file) {
